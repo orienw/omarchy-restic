@@ -14,7 +14,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import UTC, datetime
+import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +32,20 @@ UNIT_FAILURE_RESULT = "d9b373ed55a64feb8242e02dbe79a49c"
 UNIT_PATTERN = re.compile(r"^[A-Za-z0-9_.:@-]+\.(?:service|timer)$")
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 URI_USERINFO = re.compile(r"([a-z][a-z0-9+.-]*://)[^/@\s]+@", re.IGNORECASE)
-SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b(password|passwd|secret|token|api[_-]?key|access[_-]?key)\s*[:=]\s*([^\s,;]+)"
+ASSIGNMENT = re.compile(
+    r"(?P<name>\b[A-Za-z0-9_][A-Za-z0-9_-]{0,127})"
+    r"(?P<separator>\s*[:=]\s*)"
+    r'(?P<value>"(?:[^"\\]|\\.)*"|'
+    r"'(?:[^'\\]|\\.)*'|[^\s,;]+)"
+)
+AUTHORIZATION = re.compile(
+    r"(?i)\b(?P<name>(?:proxy[_-]?)?authorization)"
+    r"(?P<separator>\s*[:=]\s*)"
+    r"(?:(?P<scheme>bearer|basic)\s+)?"
+    r"(?P<value>[^\s,;]+)"
+)
+BEARER_TOKEN = re.compile(
+    r"(?i)\b(?P<scheme>bearer)\s+(?P<value>[A-Za-z0-9._~+/=-]+)"
 )
 SHELL_PARAMETER = re.compile(r"\$\{([^{}]+)\}")
 SHELL_VARIABLE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
@@ -41,9 +54,149 @@ SHELL_ASSIGNMENT = re.compile(
 )
 EXEC_PATH = re.compile(r"(?:^|[ {;])path=([^ ;}]+)")
 EXEC_ARGV = re.compile(r"argv\[\]=(.*?)\s+;\s+(?:ignore_errors|start_time)=")
+EXEC_ENTRY = re.compile(
+    r"\{\s*path=(?P<path>[^ ;}]+)\s*;\s*"
+    r"argv\[\]=(?P<argv>.*?)\s+;\s+(?:ignore_errors|start_time)=",
+    re.DOTALL,
+)
 ENVIRONMENT_FILE = re.compile(
     r'(?:"([^"]+)"|(\S+))\s+\(ignore_errors=(?:yes|no)\)'
 )
+SYSTEMD_TIMESPAN_TOKEN = re.compile(
+    r"\s*(?P<value>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>usec|us|µs|msec|ms|seconds?|sec|s|minutes?|min|hours?|hr|h|days?|d|weeks?|w|months?|years?|yr|y)",
+    re.IGNORECASE,
+)
+SYSTEMD_TIMESPAN_SECONDS = {
+    "usec": 0.000001,
+    "us": 0.000001,
+    "µs": 0.000001,
+    "msec": 0.001,
+    "ms": 0.001,
+    "second": 1,
+    "seconds": 1,
+    "sec": 1,
+    "s": 1,
+    "minute": 60,
+    "minutes": 60,
+    "min": 60,
+    "hour": 3600,
+    "hours": 3600,
+    "hr": 3600,
+    "h": 3600,
+    "day": 86400,
+    "days": 86400,
+    "d": 86400,
+    "week": 604800,
+    "weeks": 604800,
+    "w": 604800,
+    "month": 2629800,
+    "months": 2629800,
+    "year": 31557600,
+    "years": 31557600,
+    "yr": 31557600,
+    "y": 31557600,
+}
+
+RESTIC_GLOBAL_FLAGS_WITH_VALUE = {
+    "--cache-dir",
+    "--cacert",
+    "--compression",
+    "--key-hint",
+    "--limit-download",
+    "--limit-upload",
+    "--option",
+    "--pack-size",
+    "--password-command",
+    "--password-file",
+    "--repo",
+    "--repository-file",
+    "--retry-lock",
+    "--tls-client-cert",
+    "-o",
+    "-p",
+    "-r",
+}
+RESTIC_GLOBAL_BOOLEAN_FLAGS = {
+    "--cleanup-cache",
+    "--help",
+    "--insecure-tls",
+    "--json",
+    "--no-cache",
+    "--no-extra-verify",
+    "--no-lock",
+    "--quiet",
+    "--verbose",
+    "--version",
+    "-h",
+    "-q",
+    "-v",
+    "-vv",
+}
+
+COMMAND_WRAPPERS = {
+    "env": (
+        {
+            "-a",
+            "--argv0",
+            "-u",
+            "--unset",
+            "-C",
+            "--chdir",
+            "-S",
+            "--split-string",
+        },
+        0,
+    ),
+    "nice": ({"-n", "--adjustment"}, 0),
+    "ionice": (
+        {
+            "-c",
+            "--class",
+            "-n",
+            "--classdata",
+            "-p",
+            "--pid",
+            "-P",
+            "--pgid",
+            "-u",
+            "--uid",
+        },
+        0,
+    ),
+    "chrt": (
+        {
+            "-T",
+            "--sched-runtime",
+            "-P",
+            "--sched-period",
+            "-D",
+            "--sched-deadline",
+        },
+        1,
+    ),
+    "timeout": ({"-k", "--kill-after", "-s", "--signal"}, 1),
+    "flock": (
+        {
+            "-w",
+            "--timeout",
+            "--wait",
+            "-E",
+            "--conflict-exit-code",
+            "-c",
+            "--command",
+            "--start",
+            "--length",
+        },
+        1,
+    ),
+    "systemd-inhibit": (
+        {"--json", "--what", "--who", "--why", "--mode"},
+        0,
+    ),
+}
+SHELL_INTERPRETERS = {"ash", "bash", "dash", "ksh", "sh", "zsh"}
+SHELL_OPTIONS_WITH_VALUE = {"-O", "+O", "-o", "+o", "--init-file", "--rcfile"}
 
 
 class ConfigError(ValueError):
@@ -114,6 +267,45 @@ def iso_from_systemd_timestamp(value: Any) -> str | None:
     return iso_from_microseconds(text)
 
 
+def systemd_timespan_seconds(value: Any) -> float | None:
+    text = str(value or "").strip()
+    if not text or text in {"0", "n/a", "[not set]", "infinity", "∞"}:
+        return None
+    if re.fullmatch(r"\d+", text):
+        return int(text) / 1_000_000
+
+    position = 0
+    total = 0.0
+    matched = False
+    for match in SYSTEMD_TIMESPAN_TOKEN.finditer(text):
+        if text[position : match.start()].strip():
+            return None
+        total += float(match.group("value")) * SYSTEMD_TIMESPAN_SECONDS[match.group("unit").lower()]
+        position = match.end()
+        matched = True
+    if not matched or text[position:].strip():
+        return None
+    return total if total > 0 else None
+
+
+def iso_from_monotonic_deadline(
+    value: Any,
+    now: datetime,
+    wake_system: bool,
+) -> str | None:
+    deadline = systemd_timespan_seconds(value)
+    if deadline is None:
+        return None
+    clock = time.CLOCK_MONOTONIC
+    if wake_system and hasattr(time, "CLOCK_BOOTTIME"):
+        clock = time.CLOCK_BOOTTIME
+    try:
+        remaining = deadline - time.clock_gettime(clock)
+    except (OSError, ValueError):
+        return None
+    return isoformat(now + timedelta(seconds=max(0.0, remaining)))
+
+
 def elapsed_seconds(start: str | None, end: str | None) -> float | None:
     started = parse_iso(start)
     finished = parse_iso(end)
@@ -122,10 +314,52 @@ def elapsed_seconds(start: str | None, end: str | None) -> float | None:
     return max(0.0, round((finished - started).total_seconds(), 3))
 
 
+def credential_name(value: str) -> bool:
+    lowered = value.lower()
+    parts = [part for part in re.split(r"[_-]+", lowered) if part]
+    compact = "".join(parts)
+    return (
+        any(
+            part in {
+                "password",
+                "passwords",
+                "passwd",
+                "passwds",
+                "secret",
+                "secrets",
+                "token",
+                "tokens",
+                "key",
+                "keys",
+            }
+            for part in parts
+        )
+        or bool(re.search(r"(?:password|passwd|secret|token|key)s?$", compact))
+    )
+
+
+def redact_assignment(match: re.Match[str]) -> str:
+    if not credential_name(match.group("name")):
+        return match.group(0)
+    return match.group("name") + match.group("separator") + "[redacted]"
+
+
+def redact_authorization(match: re.Match[str]) -> str:
+    scheme = match.group("scheme")
+    prefix = match.group("name") + match.group("separator")
+    return prefix + (scheme + " " if scheme else "") + "[redacted]"
+
+
+def redact_bearer(match: re.Match[str]) -> str:
+    return match.group("scheme") + " [redacted]"
+
+
 def sanitize(text: Any, limit: int = 360) -> str:
     value = " ".join(str(text or "").split())
     value = URI_USERINFO.sub(r"\1[redacted]@", value)
-    value = SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}=[redacted]", value)
+    value = AUTHORIZATION.sub(redact_authorization, value)
+    value = BEARER_TOKEN.sub(redact_bearer, value)
+    value = ASSIGNMENT.sub(redact_assignment, value)
     if len(value) > limit:
         return value[: limit - 3] + "..."
     return value
@@ -135,13 +369,19 @@ def expanded_path(value: str) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(value))).resolve()
 
 
-def number(value: Any, fallback: float, minimum: float, maximum: float) -> float:
+def number(
+    value: Any,
+    fallback: float,
+    minimum: float,
+    maximum: float,
+    context: str,
+) -> float:
     try:
         result = float(value)
     except (TypeError, ValueError):
         return fallback
     if result < minimum or result > maximum:
-        raise ConfigError(f"number must be between {minimum:g} and {maximum:g}")
+        raise ConfigError(f"{context} must be between {minimum:g} and {maximum:g}")
     return result
 
 
@@ -194,10 +434,14 @@ def normalize_job(raw: Any, index: int) -> dict[str, Any]:
         "passwordFile": str(expanded_path(require_string(raw, "passwordFile", context))),
         "restic": restic.strip(),
         "tag": tag.strip(),
-        "maxRunAgeHours": number(raw.get("maxRunAgeHours"), 36, 1, 8760),
+        "maxRunAgeHours": number(
+            raw.get("maxRunAgeHours"), 36, 1, 8760, f"{context}.maxRunAgeHours"
+        ),
         "checkService": optional_unit(raw, "checkService", ".service", context),
         "checkTimer": optional_unit(raw, "checkTimer", ".timer", context),
-        "checkMaxAgeHours": number(raw.get("checkMaxAgeHours"), 720, 1, 8760),
+        "checkMaxAgeHours": number(
+            raw.get("checkMaxAgeHours"), 720, 1, 8760, f"{context}.checkMaxAgeHours"
+        ),
     }
 
 
@@ -206,8 +450,8 @@ def load_config(path: Path) -> list[dict[str, Any]]:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
         raise ConfigError(f"Jobs file not found: {path}") from error
-    except PermissionError as error:
-        raise ConfigError(f"Jobs file is not readable: {path}") from error
+    except OSError as error:
+        raise ConfigError(f"Jobs file is not readable: {path}: {sanitize(error)}") from error
     except json.JSONDecodeError as error:
         raise ConfigError(f"Jobs file is not valid JSON: line {error.lineno}, column {error.colno}") from error
 
@@ -332,21 +576,50 @@ def environment_file_paths(value: str, variables: dict[str, str]) -> list[Path]:
     return paths
 
 
-def exec_details(value: str) -> tuple[str, str]:
+def exec_entries(value: str) -> list[tuple[str, str]]:
+    entries = [
+        (match.group("path"), match.group("argv"))
+        for match in EXEC_ENTRY.finditer(value)
+    ]
+    if entries:
+        return entries
+
     path_match = EXEC_PATH.search(value)
     argv_match = EXEC_ARGV.search(value)
-    return (
-        path_match.group(1) if path_match else "",
-        argv_match.group(1) if argv_match else value,
-    )
+    return [
+        (
+            path_match.group(1) if path_match else "",
+            argv_match.group(1) if argv_match else value,
+        )
+    ]
+
+
+def read_wrapper_script(path: Path) -> str:
+    try:
+        with path.open("rb") as candidate:
+            if candidate.read(2) != b"#!":
+                return ""
+    except OSError:
+        return ""
+    return read_static_text(path)
 
 
 def wrapper_text(exec_path: str, argv: str) -> str:
-    candidates = [exec_path]
     try:
-        candidates.extend(shlex.split(argv, comments=False, posix=True))
+        tokens = shlex.split(argv, comments=False, posix=True)
     except ValueError:
-        pass
+        tokens = []
+
+    candidates = [exec_path]
+    index = command_index(tokens)
+    if index is not None:
+        candidates.append(tokens[index])
+        if Path(tokens[index]).name in SHELL_INTERPRETERS:
+            index += 1
+            while index < len(tokens) and tokens[index].startswith("-"):
+                index += 1
+            if index < len(tokens):
+                candidates.append(tokens[index])
 
     seen: set[Path] = set()
     for raw in candidates:
@@ -356,7 +629,7 @@ def wrapper_text(exec_path: str, argv: str) -> str:
         if path in seen or path.name == "restic":
             continue
         seen.add(path)
-        text = read_static_text(path)
+        text = read_wrapper_script(path)
         if text:
             return text
     return ""
@@ -371,16 +644,162 @@ def flag_value(text: str, flag: str, variables: dict[str, str]) -> str | None:
     return expand_static_value(match.group(1), variables) if match else None
 
 
-def restic_backup_command(
-    service: str,
-    timer: str,
-    description: str,
-    exec_text: str,
-    script_text: str,
-) -> bool:
-    command = exec_text + "\n" + script_text
-    identity = " ".join((service, timer, description, command)).lower()
-    return bool(re.search(r"\bbackup\b", command, re.IGNORECASE) and "restic" in identity)
+def shell_command_segments(text: str) -> list[list[str]]:
+    segments: list[list[str]] = []
+    for line in text.replace("\\\n", " ").splitlines():
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            continue
+
+        segment: list[str] = []
+        for token in tokens:
+            if token and all(character in ";&|()" for character in token):
+                if segment:
+                    segments.append(segment)
+                    segment = []
+            else:
+                segment.append(token)
+        if segment:
+            segments.append(segment)
+    return segments
+
+
+def option_end(
+    tokens: list[str], index: int, options_with_values: set[str]
+) -> int:
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token == "-" or not token.startswith("-"):
+            break
+        option = token.split("=", 1)[0]
+        index += 1
+        if option in options_with_values and "=" not in token:
+            index += 1
+    return index
+
+
+def command_index(tokens: list[str]) -> int | None:
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token):
+            index += 1
+            continue
+        if token in {"!", "command", "elif", "exec", "if", "then", "time"}:
+            index += 1
+            continue
+
+        wrapper = COMMAND_WRAPPERS.get(Path(token).name)
+        if wrapper is None:
+            break
+        options_with_values, positional_arguments = wrapper
+        index = option_end(tokens, index + 1, options_with_values)
+        if Path(token).name == "env":
+            while index < len(tokens) and re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*=.*", tokens[index]
+            ):
+                index += 1
+        else:
+            index += positional_arguments
+        if index < len(tokens) and tokens[index] == "--":
+            index += 1
+    return index if index < len(tokens) else None
+
+
+def restic_command_token(value: str) -> bool:
+    return Path(value).name == "restic" or bool(
+        re.fullmatch(r"\$(?:RESTIC|\{RESTIC\})", value)
+    )
+
+
+def restic_subcommand(tokens: list[str]) -> str | None:
+    index = command_index(tokens)
+    if index is None or not restic_command_token(tokens[index]):
+        return None
+    index += 1
+
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return tokens[index + 1] if index + 1 < len(tokens) else None
+        if token in RESTIC_GLOBAL_FLAGS_WITH_VALUE:
+            index += 2
+            continue
+        if any(
+            token.startswith(flag + "=")
+            for flag in RESTIC_GLOBAL_FLAGS_WITH_VALUE
+            if flag.startswith("--")
+        ):
+            index += 1
+            continue
+        if (
+            token in RESTIC_GLOBAL_BOOLEAN_FLAGS
+            or re.fullmatch(r"-v+", token)
+            or (
+                "=" in token
+                and token.split("=", 1)[0] in RESTIC_GLOBAL_BOOLEAN_FLAGS
+            )
+        ):
+            index += 1
+            continue
+        if token.startswith("-"):
+            return None
+        return token
+    return None
+
+
+def shell_command_argument(tokens: list[str]) -> str | None:
+    index = command_index(tokens)
+    if index is None or Path(tokens[index]).name not in SHELL_INTERPRETERS:
+        return None
+    index += 1
+
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("--"):
+            option = token.split("=", 1)[0]
+            index += 1
+            if option in SHELL_OPTIONS_WITH_VALUE and "=" not in token:
+                index += 1
+            continue
+        if token.startswith("-") and token != "-":
+            index += 1
+            if "c" in token[1:]:
+                return " ".join(tokens[index:]) if index < len(tokens) else None
+            if token in SHELL_OPTIONS_WITH_VALUE:
+                index += 1
+            continue
+        if token.startswith("+") and token != "+":
+            index += 2 if token in SHELL_OPTIONS_WITH_VALUE else 1
+            continue
+        break
+    return None
+
+
+def backup_command_segment(tokens: list[str]) -> bool:
+    if restic_subcommand(tokens) == "backup":
+        return True
+    command = shell_command_argument(tokens)
+    if command is None:
+        return False
+    return any(
+        restic_subcommand(nested) == "backup"
+        for nested in shell_command_segments(command)
+    )
+
+
+def restic_backup_command(exec_text: str, script_text: str) -> bool:
+    return any(
+        backup_command_segment(tokens)
+        for text in [argv for _, argv in exec_entries(exec_text)] + [script_text]
+        for tokens in shell_command_segments(text)
+    )
 
 
 def discovered_name(description: str, service: str) -> str:
@@ -491,9 +910,13 @@ def discovered_job(
     description = properties.get("Description", "")
     fragment_text = read_static_text(Path(properties.get("FragmentPath", "")))
     exec_text = properties.get("ExecStart", "")
-    exec_path, argv = exec_details(exec_text)
-    script_text = wrapper_text(exec_path, argv)
-    if not restic_backup_command(service, timer, description, exec_text, script_text):
+    entries = exec_entries(exec_text)
+    script_text = "\n".join(
+        text
+        for path, arguments in entries
+        if (text := wrapper_text(path, arguments))
+    )
+    if not restic_backup_command(exec_text, script_text):
         return None
 
     variables = static_variables()
@@ -518,8 +941,11 @@ def discovered_job(
     tag = flag_value(command_text, "--tag", variables) or ""
 
     executable = "restic"
-    if Path(exec_path).name == "restic":
-        executable = exec_path
+    direct_restic = next(
+        (path for path, _ in entries if Path(path).name == "restic"), ""
+    )
+    if direct_restic:
+        executable = direct_restic
     elif variables.get("RESTIC"):
         executable = variables["RESTIC"]
 
@@ -615,7 +1041,12 @@ def service_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
     }
 
 
-def timer_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
+def timer_state(
+    unit: str,
+    runner: Runner,
+    timeout: int,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     shown = systemd_show(
         unit,
         [
@@ -624,8 +1055,10 @@ def timer_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
             "SubState",
             "UnitFileState",
             "LastTriggerUSec",
+            "NextElapseUSecMonotonic",
             "NextElapseUSecRealtime",
             "Persistent",
+            "WakeSystem",
         ],
         runner,
         timeout,
@@ -638,6 +1071,12 @@ def timer_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
         }
 
     props = shown["properties"]
+    wake_system = props.get("WakeSystem", "").lower() == "yes"
+    next_run = iso_from_systemd_timestamp(props.get("NextElapseUSecRealtime"))
+    if not next_run:
+        next_run = iso_from_monotonic_deadline(
+            props.get("NextElapseUSecMonotonic"), now or utc_now(), wake_system
+        )
     return {
         "unit": unit,
         "available": True,
@@ -646,8 +1085,9 @@ def timer_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
         "subState": props.get("SubState", "unknown"),
         "unitFileState": props.get("UnitFileState", "unknown"),
         "lastTriggerAt": iso_from_systemd_timestamp(props.get("LastTriggerUSec")),
-        "nextRunAt": iso_from_systemd_timestamp(props.get("NextElapseUSecRealtime")),
+        "nextRunAt": next_run,
         "persistent": props.get("Persistent", "").lower() == "yes",
+        "wakeSystem": wake_system,
     }
 
 
@@ -663,6 +1103,51 @@ def parse_journal_lines(output: str) -> list[dict[str, Any]]:
     return entries
 
 
+def parse_journal_runs(output: str) -> list[dict[str, Any]]:
+    invocations: dict[str, dict[str, Any]] = {}
+    completions: dict[str, dict[str, Any]] = {}
+
+    for entry in parse_journal_lines(output):
+        message_id = str(entry.get("MESSAGE_ID") or "")
+        invocation_id = str(entry.get("USER_INVOCATION_ID") or "")
+        timestamp = iso_from_microseconds(entry.get("__REALTIME_TIMESTAMP"))
+        if not timestamp:
+            continue
+        if not invocation_id:
+            invocation_id = f"journal-{entry.get('__CURSOR', timestamp)}"
+        invocation = invocations.setdefault(
+            invocation_id, {"invocationId": invocation_id}
+        )
+
+        if message_id == UNIT_STARTING:
+            invocation["startedAt"] = timestamp
+            continue
+
+        if message_id in {
+            UNIT_STARTED,
+            UNIT_SUCCESS,
+            UNIT_FAILED,
+            UNIT_FAILURE_RESULT,
+        }:
+            successful = (
+                message_id in {UNIT_STARTED, UNIT_SUCCESS}
+                and entry.get("JOB_RESULT", "done") == "done"
+            )
+            invocation.update(
+                {
+                    "finishedAt": timestamp,
+                    "result": "success" if successful else "failed",
+                    "message": sanitize(entry.get("MESSAGE")),
+                }
+            )
+            invocation["durationSec"] = elapsed_seconds(
+                invocation.get("startedAt"), timestamp
+            )
+            completions[invocation_id] = dict(invocation)
+
+    return sorted(completions.values(), key=lambda run: run.get("finishedAt", ""))
+
+
 def journal_history(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
     command = [
         "journalctl",
@@ -675,7 +1160,12 @@ def journal_history(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
     try:
         result = runner.run(command, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as error:
-        return {"available": False, "lastRun": None, "lastSuccessAt": None, "error": sanitize(error)}
+        return {
+            "available": False,
+            "lastRun": None,
+            "lastSuccessAt": None,
+            "error": sanitize(error),
+        }
     if result.returncode != 0:
         return {
             "available": False,
@@ -684,43 +1174,12 @@ def journal_history(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
             "error": sanitize(result.stderr or result.stdout),
         }
 
-    invocations: dict[str, dict[str, Any]] = {}
-    completions: list[dict[str, Any]] = []
-    last_success: str | None = None
-
-    for entry in parse_journal_lines(result.stdout):
-        message_id = str(entry.get("MESSAGE_ID") or "")
-        invocation_id = str(entry.get("USER_INVOCATION_ID") or "")
-        timestamp = iso_from_microseconds(entry.get("__REALTIME_TIMESTAMP"))
-        if not timestamp:
-            continue
-        if not invocation_id:
-            invocation_id = f"journal-{entry.get('__CURSOR', timestamp)}"
-        invocation = invocations.setdefault(invocation_id, {"invocationId": invocation_id})
-
-        if message_id == UNIT_STARTING:
-            invocation["startedAt"] = timestamp
-            continue
-
-        if message_id in {UNIT_STARTED, UNIT_SUCCESS, UNIT_FAILED, UNIT_FAILURE_RESULT}:
-            successful = message_id in {UNIT_STARTED, UNIT_SUCCESS} and entry.get("JOB_RESULT", "done") == "done"
-            invocation.update(
-                {
-                    "finishedAt": timestamp,
-                    "result": "success" if successful else "failed",
-                    "message": sanitize(entry.get("MESSAGE")),
-                }
-            )
-            invocation["durationSec"] = elapsed_seconds(invocation.get("startedAt"), timestamp)
-            completions.append(dict(invocation))
-            if successful:
-                last_success = timestamp
-
-    completions.sort(key=lambda run: run.get("finishedAt", ""))
+    completed = parse_journal_runs(result.stdout)
+    successful = [run for run in completed if run.get("result") == "success"]
     return {
         "available": True,
-        "lastRun": completions[-1] if completions else None,
-        "lastSuccessAt": last_success,
+        "lastRun": completed[-1] if completed else None,
+        "lastSuccessAt": successful[-1]["finishedAt"] if successful else None,
         "error": "",
     }
 
@@ -1080,7 +1539,7 @@ def collect_repository(
         else:
             partial_error = sanitize(stats_result.stderr or stats_result.stdout or "Restic stats query failed")
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
-        partial_error = sanitize(error or "Restic returned invalid stats JSON")
+        partial_error = sanitize(error)
 
     checked_at = isoformat(now)
     payload = {
@@ -1133,7 +1592,11 @@ def evaluate_integrity(
         }
 
     service = collect_unit(job["checkService"], runner, timeout)
-    timer = timer_state(job["checkTimer"], runner, timeout) if job.get("checkTimer") else None
+    timer = (
+        timer_state(job["checkTimer"], runner, timeout, now)
+        if job.get("checkTimer")
+        else None
+    )
     last_run = service.get("lastRun")
     last_success = service.get("lastSuccessAt")
     if service.get("active"):
@@ -1186,7 +1649,7 @@ def evaluate_job(
     now: datetime,
 ) -> dict[str, Any]:
     service = collect_unit(job["service"], runner, timeout)
-    timer = timer_state(job["timer"], runner, timeout)
+    timer = timer_state(job["timer"], runner, timeout, now)
     repository = collect_repository(
         job,
         active=service.get("active", False),

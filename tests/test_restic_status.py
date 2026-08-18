@@ -4,9 +4,11 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -50,12 +52,16 @@ class FakeRunner:
         restic_error: int = 0,
         stats_error: bool = False,
         systemd_unavailable: bool = False,
+        monotonic_timer: str = "",
+        duplicate_completion: bool = False,
     ):
         self.active = active
         self.failed = failed
         self.restic_error = restic_error
         self.stats_error = stats_error
         self.systemd_unavailable = systemd_unavailable
+        self.monotonic_timer = monotonic_timer
+        self.duplicate_completion = duplicate_completion
         self.calls: list[tuple[list[str], dict[str, str] | None]] = []
 
     def run(self, command: list[str], *, timeout: int, env: dict[str, str] | None = None):
@@ -90,8 +96,14 @@ class FakeRunner:
                 "SubState=waiting",
                 "UnitFileState=enabled",
                 f"LastTriggerUSec=@{epoch(NOW - timedelta(hours=1))}",
-                f"NextElapseUSecRealtime=@{epoch(NOW + timedelta(hours=23))}",
+                (
+                    "NextElapseUSecRealtime="
+                    if self.monotonic_timer
+                    else f"NextElapseUSecRealtime=@{epoch(NOW + timedelta(hours=23))}"
+                ),
+                f"NextElapseUSecMonotonic={self.monotonic_timer}",
                 "Persistent=yes",
+                "WakeSystem=no",
             ])
             return subprocess.CompletedProcess(command, 0, output, "")
 
@@ -129,12 +141,23 @@ class FakeRunner:
                 "Backup completed",
                 result="done",
             )
-        return subprocess.CompletedProcess([], 0, started + "\n" + finished + "\n", "")
+        output = started + "\n" + finished + "\n"
+        if self.duplicate_completion and not self.failed:
+            output += journal_entry(
+                NOW - timedelta(minutes=59),
+                restic_status.UNIT_SUCCESS,
+                "Backup deactivated",
+                result="done",
+            ) + "\n"
+        return subprocess.CompletedProcess([], 0, output, "")
 
     def _tail(self):
         output = "\n".join([
             json.dumps({"MESSAGE": "repository password=super-secret"}),
             json.dumps({"MESSAGE": "request to https://alice:hunter2@backup.example failed"}),
+            json.dumps({"MESSAGE": "AWS_SECRET_ACCESS_KEY=aws-secret"}),
+            json.dumps({"MESSAGE": "B2_ACCOUNT_KEY: b2-secret"}),
+            json.dumps({"MESSAGE": "Authorization: Bearer bearer-secret"}),
         ])
         return subprocess.CompletedProcess([], 0, output, "")
 
@@ -319,6 +342,92 @@ class ResticStatusTest(unittest.TestCase):
         snapshot_call = next(call for call in runner.calls if "snapshots" in call[0])
         self.assertIn("documents", snapshot_call[0])
 
+    def test_discovery_requires_a_restic_backup_invocation(self):
+        direct_backup = (
+            "{ path=/usr/bin/restic ; argv[]=/usr/bin/restic backup /home ; "
+            "ignore_errors=no ; }"
+        )
+        flagged_backup = (
+            "{ path=/usr/bin/restic ; argv[]=/usr/bin/restic --repo /tmp/repo "
+            "--verbose backup /home ; ignore_errors=no ; }"
+        )
+        prune = (
+            "{ path=/usr/bin/restic ; argv[]=/usr/bin/restic prune ; "
+            "ignore_errors=no ; }"
+        )
+        multiple_commands = " ; ".join(
+            (
+                "{ path=/usr/bin/true ; argv[]=/usr/bin/true ; ignore_errors=no ; }",
+                "{ path=/usr/bin/restic ; argv[]=/usr/bin/restic backup /home ; "
+                "ignore_errors=no ; }",
+            )
+        )
+        shell_command = (
+            "{ path=/bin/bash ; "
+            "argv[]=/bin/bash -c restic backup /home ; "
+            "ignore_errors=no ; }"
+        )
+
+        cases = [
+            (direct_backup, "", True),
+            (flagged_backup, "", True),
+            (multiple_commands, "", True),
+            (shell_command, "", True),
+            ("", '"$RESTIC" backup --tag home /home', True),
+            ("", "/bin/bash -c 'restic backup /home'", True),
+            ("", "/bin/bash -lc 'exec nice -n19 restic backup /home'", True),
+            ("", "/bin/bash -O extglob -c 'restic backup /home'", True),
+            ("", "nice -n19 restic backup /home", True),
+            ("", "nice -n 19 restic backup /home", True),
+            ("", "ionice -c3 restic backup /home", True),
+            ("", "chrt -i 0 restic backup /home", True),
+            ("", "timeout 3600 restic backup /home", True),
+            ("", "timeout --signal TERM 3600 restic backup /home", True),
+            ("", "flock -n /tmp/restic.lock restic backup /home", True),
+            ("", "flock --timeout 5 /tmp/restic.lock restic backup /home", True),
+            ("", "systemd-inhibit --what=sleep restic backup /home", True),
+            ("", "systemd-inhibit --what sleep restic backup /home", True),
+            ("", "restic --verbose=2 backup /home", True),
+            (prune, "", False),
+            ("", "# restic backup\n/usr/bin/restic prune", False),
+            (
+                "{ path=/tmp/backup-prune.sh ; argv[]=/tmp/backup-prune.sh ; "
+                "ignore_errors=no ; }",
+                "/usr/bin/restic prune",
+                False,
+            ),
+            ("", "/usr/bin/restic forget --tag backup", False),
+            ("", 'echo "restic backup"', False),
+            ("", "/bin/bash -c 'restic prune --tag backup'", False),
+            ("", "/bin/bash -c 'echo restic backup'", False),
+            ("", "/bin/bash -c \"bash -c 'restic backup /home'\"", False),
+            ("", "flock /tmp/restic.lock -c 'restic backup /home'", False),
+        ]
+
+        for exec_text, script_text, expected in cases:
+            with self.subTest(exec_text=exec_text, script_text=script_text):
+                self.assertEqual(
+                    restic_status.restic_backup_command(exec_text, script_text),
+                    expected,
+                )
+
+    def test_wrapper_inspection_does_not_read_restic_option_paths(self):
+        argv = " ".join(
+            (
+                "/usr/bin/restic backup",
+                "--password-file",
+                str(self.password),
+                "--repository-file",
+                str(self.repository),
+                "/home/test",
+            )
+        )
+
+        with patch.object(restic_status, "read_wrapper_script") as read_script:
+            self.assertEqual(restic_status.wrapper_text("/usr/bin/restic", argv), "")
+
+        read_script.assert_not_called()
+
     def test_active_backup_defers_repository_refresh(self):
         self.collect(FakeRunner())
         runner = FakeRunner(active=True)
@@ -338,9 +447,88 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(job["service"]["lastRun"]["result"], "failed")
         self.assertTrue(any(issue["code"] == "last-run-failed" for issue in job["issues"]))
         combined = " ".join(job["logTail"])
-        self.assertNotIn("super-secret", combined)
-        self.assertNotIn("hunter2", combined)
+        for secret in (
+            "super-secret",
+            "hunter2",
+            "aws-secret",
+            "b2-secret",
+            "bearer-secret",
+        ):
+            self.assertNotIn(secret, combined)
         self.assertIn("[redacted]", combined)
+
+    def test_sensitive_assignments_and_bearer_tokens_are_redacted(self):
+        message = " ".join(
+            (
+                "AWS_SECRET_ACCESS_KEY=aws-secret",
+                "B2_ACCOUNT_KEY: b2-secret",
+                "api-key=api-secret",
+                "Authorization: Bearer auth-secret",
+                "Bearer standalone-secret",
+                "ordinary=value",
+            )
+        )
+
+        sanitized = restic_status.sanitize(message)
+
+        for secret in (
+            "aws-secret",
+            "b2-secret",
+            "api-secret",
+            "auth-secret",
+            "standalone-secret",
+        ):
+            self.assertNotIn(secret, sanitized)
+        self.assertIn("ordinary=value", sanitized)
+        self.assertGreaterEqual(sanitized.count("[redacted]"), 5)
+
+    def test_redaction_handles_unclosed_quoted_backslash_runs_in_linear_time(self):
+        self.assertEqual(
+            restic_status.sanitize(r'secret="sec \" ret"'),
+            "secret=[redacted]",
+        )
+        hostile = 'AWS_SECRET_ACCESS_KEY="' + "\\" * 3000
+
+        started = time.perf_counter()
+        sanitized = restic_status.sanitize(hostile)
+        elapsed = time.perf_counter() - started
+
+        self.assertNotIn("\\", sanitized)
+        self.assertIn("[redacted]", sanitized)
+        self.assertLess(elapsed, 1)
+
+    def test_monotonic_timer_deadline_is_converted_to_wall_clock_time(self):
+        self.assertAlmostEqual(
+            restic_status.systemd_timespan_seconds("1d 15min 4.152112s"),
+            87304.152112,
+        )
+        self.assertAlmostEqual(
+            restic_status.systemd_timespan_seconds("87304152112"),
+            87304.152112,
+        )
+        self.assertIsNone(restic_status.systemd_timespan_seconds("not a deadline"))
+
+        with patch.object(restic_status.time, "clock_gettime", return_value=100):
+            report = self.collect(FakeRunner(monotonic_timer="2min"))
+
+        self.assertEqual(
+            report["jobs"][0]["timer"]["nextRunAt"],
+            restic_status.isoformat(NOW + timedelta(seconds=20)),
+        )
+
+    def test_duplicate_completion_events_are_one_logical_run(self):
+        runner = FakeRunner(duplicate_completion=True)
+        runs = restic_status.parse_journal_runs(runner._history().stdout)
+        history = restic_status.journal_history(
+            "restic-home.service",
+            runner,
+            30,
+        )
+
+        self.assertEqual(len(runs), 1)
+        self.assertNotIn("runs", history)
+        self.assertEqual(history["lastRun"]["message"], "Backup deactivated")
+        self.assertEqual(history["lastRun"]["durationSec"], 180)
 
     def test_failed_refresh_keeps_cached_repository_data(self):
         self.collect(FakeRunner())
@@ -400,6 +588,34 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(report["summary"]["jobs"], 0)
         self.assertEqual(report["config"]["status"], "error")
         self.assertIn("at least one job", report["config"]["error"])
+
+    def test_directory_config_path_returns_a_structured_error(self):
+        config_path = restic_status.expanded_path("")
+        self.assertTrue(config_path.is_dir())
+        report = restic_status.collect_report(
+            config_path,
+            cache_dir=self.cache,
+            cache_seconds=900,
+            force=False,
+            log_lines=10,
+            timeout=30,
+            runner=FakeRunner(),
+            now=NOW,
+        )
+
+        self.assertEqual(report["config"]["status"], "error")
+        self.assertIn("Jobs file is not readable", report["config"]["error"])
+        self.assertNotIn("Traceback", report["config"]["error"])
+
+    def test_numeric_config_error_names_the_job_and_field(self):
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        config["jobs"][0]["checkMaxAgeHours"] = 9000
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+
+        report = self.collect(FakeRunner())
+
+        self.assertEqual(report["config"]["status"], "error")
+        self.assertIn("jobs[0].checkMaxAgeHours", report["config"]["error"])
 
 
 if __name__ == "__main__":

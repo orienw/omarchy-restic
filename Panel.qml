@@ -214,14 +214,12 @@ Panel {
                 Text {
                   visible: jobCard.job.logTail && jobCard.job.logTail.length > 0
                   width: parent.width
-                  text: jobCard.job.logTail ? jobCard.job.logTail.slice(-3).join("\n") : ""
+                  text: jobCard.job.logTail ? jobCard.job.logTail.join("\n") : ""
                   color: root.urgent
                   opacity: 0.85
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   wrapMode: Text.WrapAnywhere
-                  maximumLineCount: 4
-                  elide: Text.ElideRight
                 }
               }
             }

@@ -4,6 +4,8 @@ A read-only Omarchy shell plugin for monitoring restic jobs, schedules, reposito
 
 Version 0.1 answers one question quickly: are the backup jobs actually running successfully?
 
+![Restic status panel with sample data](preview.png)
+
 ## What it shows
 
 - Overall health in the Omarchy bar
@@ -110,6 +112,20 @@ Paths expand `~` and environment variables. Backend credentials needed by restic
 - Middle click refreshes status using the repository cache policy.
 - Right click forces a read-only repository refresh.
 - Press `R` in the panel to force a repository refresh.
+
+## Update
+
+```bash
+omarchy plugin update io.github.orienw.restic
+```
+
+## Remove
+
+```bash
+omarchy plugin remove io.github.orienw.restic
+```
+
+Removal only removes the Omarchy shell integration. It does not stop or change backup services, timers, repositories, or the optional override file under `~/.config/omarchy-restic/`.
 
 ## Planned scope
 
