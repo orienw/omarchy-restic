@@ -1,15 +1,33 @@
 import QtQuick
+import QtTest
 import Quickshell
 
 ShellRoot {
   id: root
 
   property bool finished: false
+  property int stage: 0
+  property var barButton: null
+  property real rotationStart: 0
 
   function fail(message) {
     console.error("TEST FAILURE:", message)
     finished = true
     Qt.exit(1)
+  }
+
+  function findBarButton(parent) {
+    if (!parent) return null
+    if (typeof parent.triggerPress === "function" && "textRotation" in parent) return parent
+    for (var i = 0; parent.children && i < parent.children.length; i++) {
+      var match = findBarButton(parent.children[i])
+      if (match) return match
+    }
+    return null
+  }
+
+  TestEvent {
+    id: events
   }
 
   QtObject {
@@ -21,6 +39,7 @@ ShellRoot {
     property string configError: ""
     property string generatedAt: "2026-08-17T12:00:00Z"
     property int refreshCalls: 0
+    property var refreshForces: []
     property var report: ({
       schemaVersion: 1,
       generatedAt: generatedAt,
@@ -65,6 +84,7 @@ ShellRoot {
 
     function refresh(forceRepositories) {
       refreshCalls++
+      refreshForces = refreshForces.concat([forceRepositories === true])
       return forceRepositories ? "forced" : "started"
     }
   }
@@ -104,10 +124,24 @@ ShellRoot {
     function moduleWidgets(moduleName) { return [] }
   }
 
-  Item {
-    id: anchor
-    width: 30
-    height: 30
+  FloatingWindow {
+    id: testWindow
+    visible: true
+    color: "transparent"
+    implicitWidth: 60
+    implicitHeight: 30
+
+    Item {
+      id: anchor
+      anchors.fill: parent
+    }
+
+    Loader {
+      id: widgetLoader
+      anchors.fill: parent
+      source: "file://" + Quickshell.env("RESTIC_PLUGIN_DIR") + "/BarWidget.qml"
+      onLoaded: item.bar = fakeBar
+    }
   }
 
   Loader {
@@ -119,14 +153,8 @@ ShellRoot {
     }
   }
 
-  Loader {
-    id: widgetLoader
-    source: "file://" + Quickshell.env("RESTIC_PLUGIN_DIR") + "/BarWidget.qml"
-    onLoaded: item.bar = fakeBar
-  }
-
   Timer {
-    interval: 50
+    interval: 100
     running: true
     repeat: true
     onTriggered: {
@@ -138,13 +166,71 @@ ShellRoot {
 
       var panel = panelLoader.item
       var widget = widgetLoader.item
-      if (panel.jobs.length !== 2 || widget.resticService !== fakeService || widget.status !== "attention") {
-        root.fail("UI did not resolve the service state")
+      if (root.stage === 0) {
+        if (panel.jobs.length !== 2 || widget.resticService !== fakeService || widget.status !== "attention") {
+          root.fail("UI did not resolve the service state")
+          return
+        }
+        root.barButton = root.findBarButton(widget)
+        if (!root.barButton) {
+          root.fail("bar button was not created")
+          return
+        }
+        if (!events.mouseClick(
+            root.barButton,
+            root.barButton.width / 2,
+            root.barButton.height / 2,
+            Qt.LeftButton,
+            Qt.NoModifier,
+            -1
+        )) {
+          root.fail("the bar window did not accept pointer input")
+          return
+        }
+        if (!widget.opened || fakeService.refreshCalls !== 1 || fakeService.refreshForces[0] !== false) {
+          root.fail("the bar button did not open and refresh the panel")
+          return
+        }
+        root.stage = 1
         return
       }
-      panel.refreshRepositories()
-      if (fakeService.refreshCalls !== 1) {
-        root.fail("panel refresh did not reach the service")
+
+      if (root.stage === 1) {
+        if (!events.keyClickChar("R", Qt.NoModifier, -1)) {
+          root.fail("the panel window did not accept keyboard input")
+          return
+        }
+        root.stage = 2
+        return
+      }
+
+      if (root.stage === 2) {
+        if (fakeService.refreshCalls !== 2 || fakeService.refreshForces[1] !== true) {
+          root.fail("the R key did not force a repository refresh")
+          return
+        }
+        fakeService.overallStatus = "running"
+        root.rotationStart = root.barButton.textRotation
+        root.stage = 3
+        return
+      }
+
+      if (root.stage === 3) {
+        if (widget.status !== "running"
+            || Math.abs(root.barButton.textRotation - root.rotationStart) < 1) {
+          root.fail("the running state did not animate the bar icon")
+          return
+        }
+        if (!events.keyClick(Qt.Key_Escape, Qt.NoModifier, -1)) {
+          root.fail("the panel window did not accept Escape")
+          return
+        }
+        root.stage = 4
+        return
+      }
+
+      if (widget.opened) {
+        root.fail("Escape did not close the panel")
         return
       }
 

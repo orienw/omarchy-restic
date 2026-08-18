@@ -22,6 +22,7 @@ from typing import Any
 
 REPORT_SCHEMA_VERSION = 1
 CONFIG_SCHEMA_VERSION = 1
+DISCOVERY_CACHE_SCHEMA_VERSION = 1
 
 UNIT_STARTING = "7d4958e842da4a758f6c1cdc7b36dcc5"
 UNIT_STARTED = "39f53479d3a045ac8e11786248231fbf"
@@ -467,6 +468,9 @@ def load_config(path: Path) -> list[dict[str, Any]]:
     ids = [job["id"] for job in normalized]
     if len(ids) != len(set(ids)):
         raise ConfigError("Job ids must be unique")
+    services = [job["service"] for job in normalized]
+    if len(services) != len(set(services)):
+        raise ConfigError("Job services must be unique")
     return normalized
 
 
@@ -818,6 +822,15 @@ def slug(value: str) -> str:
     return result or "restic-backup"
 
 
+def discovered_id(service: str) -> str:
+    stem = service.removesuffix(".service")
+    base = slug(stem)
+    if stem == base:
+        return base
+    digest = hashlib.sha256(service.encode()).hexdigest()[:8]
+    return f"{base}-{digest}"
+
+
 def parse_properties(output: str) -> dict[str, str]:
     result: dict[str, str] = {}
     for line in output.splitlines():
@@ -960,7 +973,7 @@ def discovered_job(
         discovery_error = "Automatic discovery could not find " + " and ".join(missing)
 
     return {
-        "id": slug(name),
+        "id": discovered_id(service),
         "name": name,
         "service": service,
         "timer": timer,
@@ -988,16 +1001,31 @@ def discover_jobs(runner: Runner, timeout: int) -> list[dict[str, Any]]:
             job = discovered_job(service, timer, runner, timeout)
             if job:
                 jobs.append(job)
-
-    used_ids: set[str] = set()
-    for job in jobs:
-        base = job["id"]
-        suffix = 2
-        while job["id"] in used_ids:
-            job["id"] = f"{base}-{suffix}"
-            suffix += 1
-        used_ids.add(job["id"])
     return jobs
+
+
+def merge_jobs(
+    discovered_jobs: list[dict[str, Any]],
+    configured_jobs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    configured_services = {job["service"] for job in configured_jobs}
+    merged = [dict(job, source="config") for job in configured_jobs]
+    used_ids = {job["id"] for job in configured_jobs}
+    for discovered in discovered_jobs:
+        if discovered["service"] in configured_services:
+            continue
+        job = dict(discovered)
+        if job["id"] in used_ids:
+            base = job["id"]
+            digest = hashlib.sha256(job["service"].encode()).hexdigest()[:8]
+            job["id"] = f"{base}-{digest}"
+            suffix = 2
+            while job["id"] in used_ids:
+                job["id"] = f"{base}-{digest}-{suffix}"
+                suffix += 1
+        merged.append(job)
+        used_ids.add(job["id"])
+    return merged
 
 
 def service_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
@@ -1327,15 +1355,34 @@ def cache_key(job: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(relevant, sort_keys=True).encode()).hexdigest()
 
 
-def cache_file(cache_dir: Path, config_path: Path, job_id: str) -> Path:
+def config_cache_directory(cache_dir: Path, config_path: Path) -> Path:
     config_hash = hashlib.sha256(str(config_path).encode()).hexdigest()[:12]
-    return cache_dir / config_hash / f"{job_id}.json"
+    return cache_dir / config_hash
+
+
+def cache_file(cache_dir: Path, config_path: Path, job_id: str) -> Path:
+    return config_cache_directory(cache_dir, config_path) / f"{job_id}.json"
+
+
+def discovery_cache_file(cache_dir: Path, config_path: Path) -> Path:
+    return config_cache_directory(cache_dir, config_path) / ".discovered-jobs.json"
+
+
+def ensure_private_cache_directory(cache_dir: Path, directory: Path) -> None:
+    relative = directory.relative_to(cache_dir)
+    current = cache_dir
+    current.mkdir(parents=True, exist_ok=True, mode=0o700)
+    current.chmod(0o700)
+    for part in relative.parts:
+        current /= part
+        current.mkdir(exist_ok=True, mode=0o700)
+        current.chmod(0o700)
 
 
 def load_cache(path: Path, expected_key: str) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     if not isinstance(value, dict) or value.get("cacheKey") != expected_key:
         return None
@@ -1343,7 +1390,6 @@ def load_cache(path: Path, expected_key: str) -> dict[str, Any] | None:
 
 
 def write_cache(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         os.fchmod(descriptor, 0o600)
@@ -1357,6 +1403,52 @@ def write_cache(path: Path, value: dict[str, Any]) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+def read_discovery_cache(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(value, dict)
+        or value.get("schemaVersion") != DISCOVERY_CACHE_SCHEMA_VERSION
+        or not isinstance(value.get("jobs"), list)
+    ):
+        return None
+
+    required = {
+        "id", "name", "service", "timer", "repositoryFile", "passwordFile",
+        "restic", "tag", "maxRunAgeHours", "checkService", "checkTimer",
+        "checkMaxAgeHours", "discoveryError",
+    }
+    if any(
+        not isinstance(job, dict) or not required.issubset(job)
+        for job in value["jobs"]
+    ):
+        return None
+    return value
+
+
+def load_discovery_cache(path: Path) -> list[dict[str, Any]] | None:
+    value = read_discovery_cache(path)
+    if value is None:
+        return None
+    return [dict(job, source="systemd-cache") for job in value["jobs"]]
+
+
+def save_discovery_cache(
+    path: Path,
+    jobs: list[dict[str, Any]],
+    cache_dir: Path,
+) -> None:
+    payload = {"schemaVersion": DISCOVERY_CACHE_SCHEMA_VERSION, "jobs": jobs}
+    ensure_private_cache_directory(cache_dir, path.parent)
+    current = read_discovery_cache(path)
+    if current is not None and (current == payload or (not jobs and current["jobs"])):
+        path.chmod(0o600)
+        return
+    write_cache(path, payload)
 
 
 def cache_is_fresh(cache: dict[str, Any] | None, now: datetime, max_age_seconds: int) -> bool:
@@ -1412,6 +1504,19 @@ def collect_repository(
 ) -> dict[str, Any]:
     key = cache_key(job)
     path = cache_file(cache_dir, config_path, job["id"])
+    try:
+        ensure_private_cache_directory(cache_dir, path.parent)
+    except OSError as error:
+        message = f"Could not secure plugin cache: {sanitize(error)}"
+        return {
+            "status": "unavailable",
+            "source": "none",
+            "checkedAt": None,
+            "snapshotCount": 0,
+            "latestSnapshot": None,
+            "stats": {},
+            "error": message,
+        }
     cached = load_cache(path, key)
 
     if active:
@@ -1467,7 +1572,7 @@ def collect_repository(
 
     restic_cache_dir = path.parent / "restic" / job["id"]
     try:
-        restic_cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        ensure_private_cache_directory(cache_dir, restic_cache_dir)
     except OSError as error:
         message = f"Could not create restic cache: {sanitize(error)}"
         return repository_cache_failure(path, cached, "stale", message, now) if cached else {
@@ -1688,7 +1793,7 @@ def evaluate_job(
         if hours is not None and hours > job["maxRunAgeHours"]:
             issues.append(issue("run-overdue", f"No successful run in {int(hours)} hours", "critical"))
 
-    if repository["status"] in {"unavailable", "stale", "partial"}:
+    if repository["status"] in {"unavailable", "stale"}:
         message = repository.get("error") or "Repository metadata is unavailable"
         issues.append(issue("repository-" + repository["status"], message))
 
@@ -1774,27 +1879,54 @@ def collect_report(
 ) -> dict[str, Any]:
     runner = runner or Runner()
     now = now or utc_now()
-    if config_path.exists():
+    config_present = config_path.exists()
+    configured_jobs: list[dict[str, Any]] = []
+    config_error = ""
+    if config_present:
         try:
             configured_jobs = load_config(config_path)
         except ConfigError as error:
-            return empty_report(config_path, now, str(error))
-        config_status = "ready"
-        config_source = "file"
-    else:
+            config_error = str(error)
+
+    discovery_path = discovery_cache_file(cache_dir, config_path)
+    discovery_error = ""
+    try:
+        discovered_jobs = discover_jobs(runner, timeout)
         try:
-            configured_jobs = discover_jobs(runner, timeout)
-        except DiscoveryError as error:
-            return empty_report(config_path, now, str(error), source="systemd")
-        if not configured_jobs:
-            return empty_report(
-                config_path,
-                now,
-                "No supported Restic backup timers were discovered. Add a jobs.json override for a dynamic setup.",
-                source="systemd",
-            )
+            save_discovery_cache(discovery_path, discovered_jobs, cache_dir)
+        except OSError:
+            pass
+    except DiscoveryError as error:
+        discovery_error = str(error)
+        cached_jobs = load_discovery_cache(discovery_path)
+        if cached_jobs is None:
+            discovered_jobs = []
+        else:
+            discovered_jobs = cached_jobs
+
+    job_definitions = merge_jobs(discovered_jobs, configured_jobs)
+
+    errors = "; ".join(error for error in (config_error, discovery_error) if error)
+    if not job_definitions:
+        if errors:
+            source = "file" if config_present else "systemd"
+            return empty_report(config_path, now, errors, source=source)
+        return empty_report(
+            config_path,
+            now,
+            "No supported Restic backup timers were discovered. Add a jobs.json override for a dynamic setup.",
+            source="systemd",
+        )
+
+    if config_error:
+        config_status = "error"
+    elif discovery_error:
+        config_status = "degraded"
+    elif config_present:
+        config_status = "ready"
+    else:
         config_status = "discovered"
-        config_source = "systemd"
+    config_source = "file" if config_present else "systemd"
 
     jobs = [
         evaluate_job(
@@ -1808,7 +1940,7 @@ def collect_report(
             timeout=timeout,
             now=now,
         )
-        for job in configured_jobs
+        for job in job_definitions
     ]
     summary = {"jobs": len(jobs), "healthy": 0, "running": 0, "attention": 0, "unknown": 0}
     for job in jobs:
@@ -1818,6 +1950,8 @@ def collect_report(
         overall = "attention"
     elif summary["running"]:
         overall = "running"
+    elif errors:
+        overall = "unknown"
     elif summary["healthy"] == summary["jobs"]:
         overall = "healthy"
     else:
@@ -1832,7 +1966,7 @@ def collect_report(
             "path": str(config_path),
             "status": config_status,
             "source": config_source,
-            "error": "",
+            "error": errors,
         },
         "jobs": jobs,
     }
@@ -1845,7 +1979,7 @@ def parser() -> argparse.ArgumentParser:
         "--config",
         required=True,
         type=expanded_path,
-        help="Optional jobs.json override; systemd discovery is used when the file is absent",
+        help="Optional jobs.json overrides merged with systemd discovery",
     )
     result.add_argument("--cache-dir", type=expanded_path, default=default_cache)
     result.add_argument("--repository-cache-seconds", type=int, default=900)

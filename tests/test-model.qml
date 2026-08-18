@@ -36,6 +36,11 @@ ShellRoot {
         root.fail("future time formatting failed")
         return
       }
+      if (Model.repositoryState({ repository: { status: "partial" } }, Date.now())
+          !== "Snapshots ready, stats unavailable") {
+        root.fail("partial repository status was not described as informational")
+        return
+      }
       console.log("model tests passed")
       Qt.quit()
     }

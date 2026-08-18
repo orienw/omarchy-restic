@@ -67,6 +67,8 @@ class FakeRunner:
     def run(self, command: list[str], *, timeout: int, env: dict[str, str] | None = None):
         self.calls.append((command, env))
         if command[0] == "systemctl":
+            if "list-unit-files" in command:
+                return subprocess.CompletedProcess(command, 0, "", "")
             unit = command[command.index("show") + 1]
             return self._systemctl(command, unit)
         if command[0] == "journalctl":
@@ -194,13 +196,25 @@ class FakeRunner:
 
 
 class DiscoveryRunner(FakeRunner):
-    def __init__(self, script: Path):
+    def __init__(
+        self,
+        script: Path,
+        *,
+        description: str = "restic backup of Documents to archive",
+        list_error: bool = False,
+        empty_shows: bool = False,
+    ):
         super().__init__()
         self.script = script
+        self.description = description
+        self.list_error = list_error
+        self.empty_shows = empty_shows
 
     def run(self, command: list[str], *, timeout: int, env: dict[str, str] | None = None):
         if command[0] == "systemctl" and "list-unit-files" in command:
             self.calls.append((command, env))
+            if self.list_error:
+                return subprocess.CompletedProcess(command, 1, "", "Failed to connect to user bus")
             output = "\n".join([
                 "restic-documents.timer enabled enabled",
                 "systemd-tmpfiles-clean.timer enabled enabled",
@@ -208,6 +222,9 @@ class DiscoveryRunner(FakeRunner):
             return subprocess.CompletedProcess(command, 0, output, "")
 
         if command[0] == "systemctl" and "show" in command:
+            if self.empty_shows:
+                self.calls.append((command, env))
+                return subprocess.CompletedProcess(command, 0, "", "")
             unit = command[command.index("show") + 1]
             properties = {
                 command[index + 1]
@@ -227,7 +244,7 @@ class DiscoveryRunner(FakeRunner):
                 if unit == "restic-documents.service":
                     output = "\n".join([
                         "LoadState=loaded",
-                        "Description=restic backup of Documents to archive",
+                        f"Description={self.description}",
                         "FragmentPath=",
                         f"ExecStart={{ path={self.script} ; argv[]={self.script} ; ignore_errors=no ; }}",
                         "Environment=",
@@ -275,9 +292,15 @@ class ResticStatusTest(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def collect(self, runner: FakeRunner, *, force: bool = False):
+    def collect(
+        self,
+        runner: FakeRunner,
+        *,
+        force: bool = False,
+        config_path: Path | None = None,
+    ):
         return restic_status.collect_report(
-            self.config,
+            config_path if config_path is not None else self.config,
             cache_dir=self.cache,
             cache_seconds=900,
             force=force,
@@ -286,6 +309,20 @@ class ResticStatusTest(unittest.TestCase):
             runner=runner,
             now=NOW,
         )
+
+    def discovery_script(self) -> Path:
+        script = self.root / "documents-backup.sh"
+        script.write_text(
+            "\n".join([
+                "#!/bin/bash",
+                f'export RESTIC_REPOSITORY_FILE="{self.repository}"',
+                f'export RESTIC_PASSWORD_FILE="{self.password}"',
+                f'RESTIC="{sys.executable}"',
+                '"$RESTIC" backup --tag documents /home/test',
+            ]),
+            encoding="utf-8",
+        )
+        return script
 
     def test_successful_unchanged_run_is_healthy_even_with_old_snapshot(self):
         runner = FakeRunner()
@@ -305,42 +342,134 @@ class ResticStatusTest(unittest.TestCase):
         self.assertIn("--password-file", snapshot_call[0])
         self.assertIn("--cache-dir", snapshot_call[0])
         self.assertNotIn("RESTIC_PASSWORD", snapshot_call[1])
-        self.assertFalse(any("list-unit-files" in call[0] for call in runner.calls))
+        self.assertTrue(any("list-unit-files" in call[0] for call in runner.calls))
 
     def test_missing_config_discovers_user_systemd_restic_jobs(self):
-        script = self.root / "documents-backup.sh"
-        script.write_text(
-            "\n".join([
-                "#!/bin/bash",
-                f'export RESTIC_REPOSITORY_FILE="{self.repository}"',
-                f'export RESTIC_PASSWORD_FILE="{self.password}"',
-                f'RESTIC="{sys.executable}"',
-                '"$RESTIC" backup --tag documents /home/test',
-            ]),
-            encoding="utf-8",
-        )
+        script = self.discovery_script()
         runner = DiscoveryRunner(script)
-        report = restic_status.collect_report(
-            self.root / "missing.json",
-            cache_dir=self.cache,
-            cache_seconds=900,
-            force=False,
-            log_lines=10,
-            timeout=30,
-            runner=runner,
-            now=NOW,
+        report = self.collect(
+            runner,
+            config_path=self.root / "missing.json",
         )
 
         self.assertEqual(report["config"]["status"], "discovered")
         self.assertEqual(report["config"]["source"], "systemd")
         self.assertEqual(report["overallStatus"], "healthy")
         self.assertEqual(len(report["jobs"]), 1)
-        self.assertEqual(report["jobs"][0]["id"], "documents")
+        self.assertEqual(report["jobs"][0]["id"], "restic-documents")
         self.assertEqual(report["jobs"][0]["name"], "Documents")
         self.assertEqual(report["jobs"][0]["source"], "systemd")
         self.assertEqual(report["jobs"][0]["repository"]["snapshotCount"], 2)
         snapshot_call = next(call for call in runner.calls if "snapshots" in call[0])
         self.assertIn("documents", snapshot_call[0])
+
+    def test_configured_jobs_merge_with_unmentioned_discovered_jobs(self):
+        report = self.collect(DiscoveryRunner(self.discovery_script()))
+
+        self.assertEqual(report["config"]["status"], "ready")
+        self.assertEqual(report["config"]["source"], "file")
+        self.assertEqual(
+            [(job["id"], job["source"]) for job in report["jobs"]],
+            [("home", "config"), ("restic-documents", "systemd")],
+        )
+        self.assertEqual(report["overallStatus"], "healthy")
+
+    def test_configured_job_replaces_discovery_for_the_same_service(self):
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        config["jobs"][0].update({
+            "id": "documents",
+            "name": "Documents override",
+            "service": "restic-documents.service",
+            "timer": "restic-documents.timer",
+            "tag": "documents",
+        })
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+
+        report = self.collect(DiscoveryRunner(self.discovery_script()))
+
+        self.assertEqual(len(report["jobs"]), 1)
+        self.assertEqual(report["jobs"][0]["id"], "documents")
+        self.assertEqual(report["jobs"][0]["name"], "Documents override")
+        self.assertEqual(report["jobs"][0]["source"], "config")
+
+    def test_configured_jobs_survive_discovery_failure_without_cache(self):
+        report = self.collect(
+            DiscoveryRunner(self.discovery_script(), list_error=True)
+        )
+
+        self.assertEqual(report["overallStatus"], "unknown")
+        self.assertEqual(report["config"]["status"], "degraded")
+        self.assertEqual(report["config"]["source"], "file")
+        self.assertIn("Could not list user timers", report["config"]["error"])
+        self.assertEqual(len(report["jobs"]), 1)
+        self.assertEqual(report["jobs"][0]["id"], "home")
+        self.assertEqual(report["jobs"][0]["status"], "healthy")
+
+    def test_discovered_identity_survives_description_changes(self):
+        config = self.root / "missing.json"
+        first = self.collect(
+            DiscoveryRunner(self.discovery_script()),
+            config_path=config,
+        )
+        renamed_runner = DiscoveryRunner(
+            self.discovery_script(),
+            description="restic backup of Personal files to archive",
+        )
+        second = self.collect(renamed_runner, config_path=config)
+
+        self.assertEqual(first["jobs"][0]["id"], "restic-documents")
+        self.assertEqual(second["jobs"][0]["id"], "restic-documents")
+        self.assertEqual(second["jobs"][0]["name"], "Personal files")
+        self.assertFalse(
+            any("snapshots" in command or "stats" in command for command, _ in renamed_runner.calls)
+        )
+
+    def test_discovery_failure_uses_last_discovered_jobs(self):
+        config = self.root / "missing.json"
+        self.collect(
+            DiscoveryRunner(self.discovery_script()),
+            config_path=config,
+        )
+        failed_runner = DiscoveryRunner(self.discovery_script(), list_error=True)
+
+        report = self.collect(failed_runner, config_path=config)
+
+        self.assertEqual(report["overallStatus"], "unknown")
+        self.assertEqual(report["config"]["status"], "degraded")
+        self.assertEqual(report["config"]["source"], "systemd")
+        self.assertIn("Could not list user timers", report["config"]["error"])
+        self.assertEqual(len(report["jobs"]), 1)
+        self.assertEqual(report["jobs"][0]["id"], "restic-documents")
+        self.assertEqual(report["jobs"][0]["source"], "systemd-cache")
+
+    def test_unchanged_discovery_cache_is_not_rewritten(self):
+        config = self.root / "missing.json"
+        runner = DiscoveryRunner(self.discovery_script())
+        self.collect(runner, config_path=config)
+        cache = restic_status.discovery_cache_file(self.cache, config)
+        inode = cache.stat().st_ino
+
+        self.collect(DiscoveryRunner(runner.script), config_path=config)
+
+        self.assertEqual(cache.stat().st_ino, inode)
+
+    def test_empty_discovery_preserves_nonempty_cache_without_merging_it(self):
+        config = self.root / "missing.json"
+        script = self.discovery_script()
+        self.collect(DiscoveryRunner(script), config_path=config)
+
+        empty = self.collect(
+            DiscoveryRunner(script, empty_shows=True),
+            config_path=config,
+        )
+        recovered = self.collect(
+            DiscoveryRunner(script, list_error=True),
+            config_path=config,
+        )
+
+        self.assertEqual(empty["jobs"], [])
+        self.assertEqual(recovered["jobs"][0]["id"], "restic-documents")
+        self.assertEqual(recovered["jobs"][0]["source"], "systemd-cache")
 
     def test_discovery_requires_a_restic_backup_invocation(self):
         direct_backup = (
@@ -548,13 +677,43 @@ class ResticStatusTest(unittest.TestCase):
 
     def test_partial_stats_failure_persists_in_fresh_cache(self):
         report = self.collect(FakeRunner(stats_error=True))
-        self.assertEqual(report["jobs"][0]["repository"]["status"], "partial")
+        job = report["jobs"][0]
+
+        self.assertEqual(report["overallStatus"], "healthy")
+        self.assertEqual(job["status"], "healthy")
+        self.assertEqual(job["repository"]["status"], "partial")
 
         cached_runner = FakeRunner()
         cached_report = self.collect(cached_runner)
+        self.assertEqual(cached_report["overallStatus"], "healthy")
         self.assertEqual(cached_report["jobs"][0]["repository"]["status"], "partial")
         self.assertIn("stats unavailable", cached_report["jobs"][0]["repository"]["error"])
         self.assertFalse(any("snapshots" in command or "stats" in command for command, _ in cached_runner.calls))
+
+    def test_existing_cache_directories_are_hardened(self):
+        job_cache = restic_status.cache_file(self.cache, self.config, "home")
+        restic_parent = job_cache.parent / "restic"
+        restic_parent.mkdir(parents=True)
+        for directory in (self.cache, job_cache.parent, restic_parent):
+            directory.chmod(0o755)
+
+        self.collect(FakeRunner())
+
+        private_directories = [
+            self.cache,
+            job_cache.parent,
+            restic_parent,
+            restic_parent / "home",
+        ]
+        self.assertTrue(
+            all(
+                directory.stat().st_mode & 0o777 == 0o700
+                for directory in private_directories
+            )
+        )
+        self.assertTrue(
+            all(path.stat().st_mode & 0o777 == 0o600 for path in job_cache.parent.glob("*.json"))
+        )
 
     def test_unavailable_systemd_is_unknown_not_a_failure(self):
         report = self.collect(FakeRunner(systemd_unavailable=True))

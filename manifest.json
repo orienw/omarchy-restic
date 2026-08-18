@@ -31,7 +31,7 @@
         "key": "jobsFile",
         "type": "string",
         "label": "Jobs override file",
-        "description": "Optional JSON override for jobs that cannot be discovered from user systemd timers.",
+        "description": "Optional JSON overrides merged with discovered user systemd jobs.",
         "defaultValue": "~/.config/omarchy-restic/jobs.json"
       },
       {

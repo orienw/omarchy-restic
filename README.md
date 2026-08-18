@@ -19,6 +19,8 @@ Version 0.1 answers one question quickly: are the backup jobs actually running s
 
 Health follows completed systemd runs, not snapshot age. This matters when a backup uses `--skip-if-unchanged`, because a successful unchanged run intentionally creates no snapshot.
 
+Repository statistics are supplementary. If snapshots can be read but the stats query fails, the job stays healthy and the card reports that statistics are unavailable.
+
 ## Safety boundary
 
 The plugin is read-only. It runs only:
@@ -29,7 +31,7 @@ The plugin is read-only. It runs only:
 - `restic snapshots --json`
 - `restic stats --json --mode raw-data`
 
-Discovery reads user unit files, referenced environment files, and local wrapper scripts as plain text. It never sources them. Repository commands use normal restic locking. They are deferred whenever the matching service is observed active, and normal locking protects the race if a job starts between checks. Successful metadata is cached for later display. Restic receives a private cache directory under the plugin cache. The plugin never uses `--no-lock`, reads password contents itself, starts jobs, prunes snapshots, unlocks repositories, or changes restic configuration.
+Discovery reads user unit files, referenced environment files, and local wrapper scripts as plain text. It never sources them. Repository commands use normal restic locking. They are deferred whenever the matching service is observed active, and normal locking protects the race if a job starts between checks. Successful metadata is cached for later display. Cache directories use mode `0700`, and cache files use mode `0600`. Restic receives a private cache directory under the plugin cache. The plugin never uses `--no-lock`, reads password contents itself, starts jobs, prunes snapshots, unlocks repositories, or changes restic configuration.
 
 ## Requirements
 
@@ -57,6 +59,8 @@ The plugin discovers Restic jobs automatically. It lists user systemd timers, re
 
 Discovery never sources or executes a backup script. Direct Restic commands and static shell assignments are supported. Dynamic command construction, repository URLs without repository files, and unusual credential loading need an override.
 
+Discovered job identifiers come from the service unit name, so changing a unit description only changes the label. The last successful discovered job set is cached. If timer discovery later fails, the existing cards remain visible while the panel reports that verification is degraded.
+
 ## Optional job overrides
 
 If automatic discovery cannot fully describe a job, copy and edit the included override file:
@@ -67,7 +71,7 @@ install -Dm600 \
   ~/.config/omarchy-restic/jobs.json
 ```
 
-When this file exists, it replaces automatic discovery. Example:
+When this file exists, its jobs are merged with automatic discovery by service name. A configured job replaces the discovered definition for the same service. Discovered services not mentioned in the file remain visible. Example:
 
 ```json
 {

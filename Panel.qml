@@ -296,10 +296,15 @@ Panel {
 
     Text {
       id: infoValue
+      width: Math.min(
+        implicitWidth,
+        Math.max(0, parent.width - infoLabel.implicitWidth - parent.spacing * 2)
+      )
       text: parent.value
       color: root.foreground
       font.family: root.fontFamily
       font.pixelSize: Style.font.bodySmall
+      horizontalAlignment: Text.AlignRight
       elide: Text.ElideRight
     }
   }
