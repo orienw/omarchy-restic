@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+TEST_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PROJECT_DIR=$(cd "$TEST_DIR/.." && pwd)
+TEST_RUNTIME=$(mktemp -d /tmp/omarchy-restic-runtime.XXXXXX)
+IMPORT_ROOT="$TEST_RUNTIME/imports"
+trap 'rm -rf -- "$TEST_RUNTIME"' EXIT
+chmod 700 "$TEST_RUNTIME"
+mkdir -p "$IMPORT_ROOT/qs"
+ln -s /usr/share/omarchy/shell/Ui "$IMPORT_ROOT/qs/Ui"
+ln -s /usr/share/omarchy/shell/Commons "$IMPORT_ROOT/qs/Commons"
+
+run_test() {
+  local file=$1
+  local expected=$2
+  local output
+
+  if ! output=$(
+    WAYLAND_DISPLAY= \
+    XDG_RUNTIME_DIR="$TEST_RUNTIME" \
+    QT_QPA_PLATFORM=offscreen \
+    QML_IMPORT_PATH="$IMPORT_ROOT" \
+    QML2_IMPORT_PATH="$IMPORT_ROOT" \
+    RESTIC_PLUGIN_DIR="$PROJECT_DIR" \
+      quickshell --no-color -p "$file" 2>&1
+  ); then
+    printf '%s\n' "$output" >&2
+    exit 1
+  fi
+  if ! grep -q "$expected" <<<"$output"; then
+    printf '%s\n' "$output" >&2
+    exit 1
+  fi
+}
+
+MODEL_TEST_DIR="$TEST_RUNTIME/model"
+mkdir -p "$MODEL_TEST_DIR"
+cp "$TEST_DIR/test-model.qml" "$MODEL_TEST_DIR/test-model.qml"
+ln -s "$PROJECT_DIR/Model.js" "$MODEL_TEST_DIR/Model.js"
+
+run_test "$MODEL_TEST_DIR/test-model.qml" "model tests passed"
+run_test "$TEST_DIR/test-service.qml" "service tests passed"
+
+printf 'Headless QML model and service tests passed\n'

@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.orienw.restic",
+  "name": "Restic",
+  "version": "0.1.0",
+  "author": "Orien",
+  "license": "MIT",
+  "description": "Monitors restic jobs, schedules, repositories, and integrity checks from the Omarchy bar.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Restic",
+    "description": "See backup health, schedules, repository statistics, and recent failures.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "jobsFile": "~/.config/omarchy-restic/jobs.json",
+      "refreshIntervalSec": 60,
+      "repositoryRefreshMinutes": 15,
+      "logLines": 12
+    },
+    "schema": [
+      {
+        "key": "jobsFile",
+        "type": "string",
+        "label": "Jobs override file",
+        "description": "Optional JSON override for jobs that cannot be discovered from user systemd timers.",
+        "defaultValue": "~/.config/omarchy-restic/jobs.json"
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Status refresh interval (seconds)",
+        "min": 15,
+        "max": 3600,
+        "step": 15,
+        "defaultValue": 60
+      },
+      {
+        "key": "repositoryRefreshMinutes",
+        "type": "integer",
+        "label": "Repository refresh interval (minutes)",
+        "description": "Repository commands use normal restic locking and are deferred while the matching service is active.",
+        "min": 1,
+        "max": 1440,
+        "step": 5,
+        "defaultValue": 15
+      },
+      {
+        "key": "logLines",
+        "type": "integer",
+        "label": "Failure log lines",
+        "min": 1,
+        "max": 100,
+        "step": 1,
+        "defaultValue": 12
+      }
+    ]
+  }
+}

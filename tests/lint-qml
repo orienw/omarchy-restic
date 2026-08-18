@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+PROJECT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+OMARCHY_ROOT=${OMARCHY_PATH:-/usr/share/omarchy}
+QML_LINT=/usr/lib/qt6/bin/qmllint
+IMPORT_ROOT=$(mktemp -d /tmp/omarchy-restic-qml.XXXXXX)
+trap 'rm -rf -- "$IMPORT_ROOT"' EXIT
+
+[[ -x $QML_LINT ]] || { printf 'qmllint not found: %s\n' "$QML_LINT" >&2; exit 1; }
+[[ -d $OMARCHY_ROOT/shell/Ui ]] || { printf 'Omarchy UI imports not found: %s\n' "$OMARCHY_ROOT" >&2; exit 1; }
+[[ -d $OMARCHY_ROOT/shell/Commons ]] || { printf 'Omarchy common imports not found: %s\n' "$OMARCHY_ROOT" >&2; exit 1; }
+
+mkdir -p "$IMPORT_ROOT/qs"
+ln -s "$OMARCHY_ROOT/shell/Ui" "$IMPORT_ROOT/qs/Ui"
+ln -s "$OMARCHY_ROOT/shell/Commons" "$IMPORT_ROOT/qs/Commons"
+
+"$QML_LINT" \
+  --signal-handler-parameters disable \
+  -I "$IMPORT_ROOT" \
+  "$PROJECT_DIR/Service.qml" \
+  "$PROJECT_DIR/BarWidget.qml" \
+  "$PROJECT_DIR/Panel.qml"
+
+printf 'QML checks passed\n'

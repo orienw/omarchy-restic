@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "jobs": [
+    {
+      "id": "home",
+      "name": "Home",
+      "service": "restic-backup.service",
+      "timer": "restic-backup.timer",
+      "repositoryFile": "~/.config/restic/repository",
+      "passwordFile": "~/.config/restic/password",
+      "tag": "forge",
+      "maxRunAgeHours": 36
+    },
+    {
+      "id": "dropbox",
+      "name": "Dropbox",
+      "service": "restic-dropbox.service",
+      "timer": "restic-dropbox.timer",
+      "repositoryFile": "~/.config/restic/dropbox-repository",
+      "passwordFile": "~/.config/restic/dropbox-password",
+      "tag": "dropbox",
+      "maxRunAgeHours": 36
+    }
+  ]
+}
