@@ -41,6 +41,54 @@ ShellRoot {
         root.fail("partial repository status was not described as informational")
         return
       }
+      if (Model.detailsDefaultOpen(null) !== false) {
+        root.fail("missing jobs should stay collapsed")
+        return
+      }
+      if (Model.detailsDefaultOpen({ status: "healthy" }) !== false) {
+        root.fail("healthy jobs should stay collapsed")
+        return
+      }
+      if (Model.detailsDefaultOpen({ status: "running" }) !== false) {
+        root.fail("running jobs should stay collapsed")
+        return
+      }
+      if (Model.detailsDefaultOpen({ status: "unknown" }) !== false) {
+        root.fail("unknown jobs should stay collapsed")
+        return
+      }
+      if (Model.detailsDefaultOpen({ status: "attention" }) !== true) {
+        root.fail("attention jobs should start expanded")
+        return
+      }
+      if (Model.detailsDefaultOpen({
+        status: "healthy",
+        repository: { status: "partial" }
+      }) !== false) {
+        root.fail("missing stats should not force details open")
+        return
+      }
+      if (Model.detailsDefaultOpen({
+        status: "healthy",
+        repository: { status: "stale" }
+      }) !== true) {
+        root.fail("stale repositories should start expanded")
+        return
+      }
+      if (Model.detailsDefaultOpen({
+        status: "healthy",
+        repository: { status: "unavailable" }
+      }) !== true) {
+        root.fail("unavailable repositories should start expanded")
+        return
+      }
+      if (Model.detailsDefaultOpen({
+        status: "healthy",
+        integrity: { status: "attention" }
+      }) !== true) {
+        root.fail("integrity failures should start expanded")
+        return
+      }
       console.log("model tests passed")
       Qt.quit()
     }

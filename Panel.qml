@@ -50,6 +50,14 @@ Panel {
     if (resticService) resticService.refresh(true)
   }
 
+  function jobCard(jobId) {
+    for (var i = 0; i < jobRepeater.count; i++) {
+      var card = jobRepeater.itemAt(i)
+      if (card && String(card.job && card.job.id || "") === String(jobId)) return card
+    }
+    return null
+  }
+
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
@@ -135,12 +143,18 @@ Panel {
           }
 
           Repeater {
+            id: jobRepeater
             model: root.jobs
 
             delegate: BorderSurface {
               id: jobCard
               required property var modelData
               property var job: modelData
+              property bool detailsExpanded: Model.detailsDefaultOpen(job)
+
+              function toggleDetails() {
+                detailsExpanded = !detailsExpanded
+              }
 
               width: content.width
               implicitHeight: jobContent.implicitHeight + Style.space(20)
@@ -197,21 +211,6 @@ Panel {
                 InfoPair { label: "Latest snapshot"; value: Model.latestSnapshot(jobCard.job, root.nowMs) }
 
                 Text {
-                  visible: text !== ""
-                  width: parent.width
-                  text: Model.snapshotSummary(jobCard.job)
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
-                }
-
-                InfoPair { label: "Snapshots"; value: Model.snapshotCount(jobCard.job) }
-                InfoPair { label: "Raw data"; value: Model.rawData(jobCard.job) }
-                InfoPair { label: "Repository"; value: Model.repositoryState(jobCard.job, root.nowMs) }
-                InfoPair { label: "Integrity"; value: Model.integrityState(jobCard.job, root.nowMs) }
-
-                Text {
                   visible: jobCard.job.logTail && jobCard.job.logTail.length > 0
                   width: parent.width
                   text: jobCard.job.logTail ? jobCard.job.logTail.join("\n") : ""
@@ -220,6 +219,35 @@ Panel {
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   wrapMode: Text.WrapAnywhere
+                }
+
+                DetailsToggle {
+                  objectName: "jobDetailsToggle-" + String(jobCard.job.id || "")
+                  expanded: jobCard.detailsExpanded
+                  onClicked: jobCard.toggleDetails()
+                }
+
+                Column {
+                  id: jobDetails
+                  objectName: "jobDetails-" + String(jobCard.job.id || "")
+                  visible: jobCard.detailsExpanded
+                  width: parent.width
+                  spacing: Style.space(7)
+
+                  Text {
+                    visible: text !== ""
+                    width: parent.width
+                    text: Model.snapshotSummary(jobCard.job)
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    elide: Text.ElideRight
+                  }
+
+                  InfoPair { label: "Snapshots"; value: Model.snapshotCount(jobCard.job) }
+                  InfoPair { label: "Raw data"; value: Model.rawData(jobCard.job) }
+                  InfoPair { label: "Repository"; value: Model.repositoryState(jobCard.job, root.nowMs) }
+                  InfoPair { label: "Integrity"; value: Model.integrityState(jobCard.job, root.nowMs) }
                 }
               }
             }
@@ -272,6 +300,54 @@ Panel {
     repeat: true
     running: root.opened
     onTriggered: root.nowMs = Date.now()
+  }
+
+  component DetailsToggle: Item {
+    id: detailsToggle
+
+    property bool expanded: false
+
+    signal clicked()
+
+    width: parent.width
+    implicitHeight: detailsLabel.implicitHeight
+    height: implicitHeight
+
+    Row {
+      anchors.fill: parent
+      spacing: Style.space(8)
+
+      Text {
+        id: detailsLabel
+        text: "Details"
+        color: detailsHandler.containsMouse ? root.foreground : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+
+      Item {
+        width: Math.max(0, parent.width - detailsLabel.implicitWidth - detailsChevron.implicitWidth - parent.spacing * 2)
+        height: 1
+      }
+
+      Text {
+        id: detailsChevron
+        text: "󰅀"
+        color: detailsHandler.containsMouse ? root.foreground : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        rotation: detailsToggle.expanded ? 180 : 0
+        transformOrigin: Item.Center
+      }
+    }
+
+    MouseArea {
+      id: detailsHandler
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: detailsToggle.clicked()
+    }
   }
 
   component InfoPair: Row {

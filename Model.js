@@ -152,6 +152,18 @@ function integrityState(job, nowMs) {
   return "Passed " + relativeTime(integrity.lastSuccessAt, nowMs).toLowerCase()
 }
 
+function detailsDefaultOpen(job) {
+  if (!job) return false
+  if (job.status === "attention") return true
+  var repository = job.repository ? job.repository : null
+  if (repository) {
+    var repositoryStatus = String(repository.status || "")
+    if (repositoryStatus === "unavailable" || repositoryStatus === "stale") return true
+  }
+  var integrity = job.integrity ? job.integrity : null
+  return !!(integrity && integrity.status === "attention")
+}
+
 function reportMeta(report, refreshing) {
   if (refreshing) return "Refreshing status"
   if (!report || !report.summary) return "Waiting for status"

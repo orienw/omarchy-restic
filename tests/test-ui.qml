@@ -26,6 +26,23 @@ ShellRoot {
     return null
   }
 
+  function findByName(parent, name) {
+    if (!parent) return null
+    if (parent.objectName === name) return parent
+    var i
+    if (parent.children) {
+      for (i = 0; i < parent.children.length; i++) {
+        var childMatch = findByName(parent.children[i], name)
+        if (childMatch) return childMatch
+      }
+    }
+    if (parent.contentItem && parent.contentItem !== parent) {
+      var contentMatch = findByName(parent.contentItem, name)
+      if (contentMatch) return contentMatch
+    }
+    return null
+  }
+
   TestEvent {
     id: events
   }
@@ -189,6 +206,30 @@ ShellRoot {
         }
         if (!widget.opened || fakeService.refreshCalls !== 1 || fakeService.refreshForces[0] !== false) {
           root.fail("the bar button did not open and refresh the panel")
+          return
+        }
+        var homeCard = panel.jobCard("home")
+        var dropboxCard = panel.jobCard("dropbox")
+        if (!homeCard) {
+          root.fail("healthy job card was not created")
+          return
+        }
+        if (homeCard.detailsExpanded) {
+          root.fail("healthy job details should start collapsed")
+          return
+        }
+        if (!dropboxCard || !dropboxCard.detailsExpanded) {
+          root.fail("attention job details should start open")
+          return
+        }
+        var homeToggle = root.findByName(homeCard, "jobDetailsToggle-home")
+        if (!homeToggle || homeToggle.height < 1 || homeToggle.width < 1) {
+          root.fail("healthy job details toggle was not laid out")
+          return
+        }
+        homeCard.toggleDetails()
+        if (!homeCard.detailsExpanded) {
+          root.fail("toggling details did not expand the healthy job")
           return
         }
         root.stage = 1
