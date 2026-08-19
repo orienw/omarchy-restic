@@ -237,26 +237,45 @@ ShellRoot {
       }
 
       if (root.stage === 1) {
-        if (!events.keyClickChar("R", Qt.NoModifier, -1)) {
-          root.fail("the panel window did not accept keyboard input")
-          return
-        }
+        fakeService.jobs = fakeService.jobs.slice()
         root.stage = 2
         return
       }
 
       if (root.stage === 2) {
+        if (!panel.jobCard("home") || panel.jobCard("home").detailsExpanded !== true) {
+          root.fail("healthy job details did not survive a jobs refresh")
+          return
+        }
+        if (!panel.jobCard("dropbox") || panel.jobCard("dropbox").detailsExpanded !== true) {
+          root.fail("attention job details did not survive a jobs refresh")
+          return
+        }
+        root.stage = 3
+        return
+      }
+
+      if (root.stage === 3) {
+        if (!events.keyClickChar("R", Qt.NoModifier, -1)) {
+          root.fail("the panel window did not accept keyboard input")
+          return
+        }
+        root.stage = 4
+        return
+      }
+
+      if (root.stage === 4) {
         if (fakeService.refreshCalls !== 2 || fakeService.refreshForces[1] !== true) {
           root.fail("the R key did not force a repository refresh")
           return
         }
         fakeService.overallStatus = "running"
         root.rotationStart = root.barButton.textRotation
-        root.stage = 3
+        root.stage = 5
         return
       }
 
-      if (root.stage === 3) {
+      if (root.stage === 5) {
         if (widget.status !== "running"
             || Math.abs(root.barButton.textRotation - root.rotationStart) < 1) {
           root.fail("the running state did not animate the bar icon")
@@ -266,7 +285,7 @@ ShellRoot {
           root.fail("the panel window did not accept Escape")
           return
         }
-        root.stage = 4
+        root.stage = 6
         return
       }
 

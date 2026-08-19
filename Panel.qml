@@ -15,6 +15,7 @@ Panel {
   property var anchorItem: null
   property var hostWidget: null
   property double nowMs: Date.now()
+  property var detailsOverrides: ({})
 
   readonly property var barIdentity: hostWidget || root
   readonly property var resticService: bar && bar.shell
@@ -56,6 +57,15 @@ Panel {
       if (card && String(card.job && card.job.id || "") === String(jobId)) return card
     }
     return null
+  }
+
+  function initialDetails(job) {
+    var key = String(job && job.id || "")
+    return key in detailsOverrides ? detailsOverrides[key] === true : Model.detailsDefaultOpen(job)
+  }
+
+  function rememberDetails(jobId, expanded) {
+    detailsOverrides[String(jobId)] = expanded === true
   }
 
   KeyboardPanel {
@@ -150,10 +160,11 @@ Panel {
               id: jobCard
               required property var modelData
               property var job: modelData
-              property bool detailsExpanded: Model.detailsDefaultOpen(job)
+              property bool detailsExpanded: root.initialDetails(job)
 
               function toggleDetails() {
                 detailsExpanded = !detailsExpanded
+                root.rememberDetails(job.id, detailsExpanded)
               }
 
               width: content.width

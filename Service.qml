@@ -43,6 +43,9 @@ Item {
 
   property string _stdout: ""
   property string _stderr: ""
+  property bool _stdoutDone: false
+  property bool _exited: false
+  property int _exitCode: 0
 
   function findSettings() {
     var config = shell && shell.shellConfig ? shell.shellConfig : null
@@ -88,6 +91,8 @@ Item {
 
     _stdout = ""
     _stderr = ""
+    _stdoutDone = false
+    _exited = false
     refreshing = true
     var command = [
       "python3", helperPath,
@@ -117,6 +122,17 @@ Item {
     return text.length > 240 ? text.substring(0, 237) + "..." : text
   }
 
+  function _finalize() {
+    if (!_stdoutDone || !_exited) return
+    refreshing = false
+    if (!applyReport(_stdout))
+      lastError = elideError(_stderr || _stdout || "Restic status collector failed with exit " + _exitCode)
+    if (forcePending) {
+      forcePending = false
+      Qt.callLater(function() { root.refresh(true) })
+    }
+  }
+
   onManifestChanged: Qt.callLater(initialize)
   onShellChanged: Qt.callLater(initialize)
   onJobsFileChanged: if (initialized) delayedRefresh.restart()
@@ -142,25 +158,21 @@ Item {
     running: false
     command: []
     stdout: StdioCollector {
-      id: stdoutCollector
       waitForEnd: true
-      onStreamFinished: root._stdout = text
+      onStreamFinished: {
+        root._stdout = text
+        root._stdoutDone = true
+        root._finalize()
+      }
     }
     stderr: StdioCollector {
-      id: stderrCollector
       waitForEnd: true
       onStreamFinished: root._stderr = text
     }
     onExited: function(exitCode) {
-      root.refreshing = false
-      var stdout = String(stdoutCollector.text || root._stdout || "")
-      var stderr = String(stderrCollector.text || root._stderr || "")
-      if (!root.applyReport(stdout))
-        root.lastError = root.elideError(stderr || stdout || "Restic status collector failed with exit " + exitCode)
-      if (root.forcePending) {
-        root.forcePending = false
-        Qt.callLater(function() { root.refresh(true) })
-      }
+      root._exitCode = exitCode
+      root._exited = true
+      root._finalize()
     }
   }
 }

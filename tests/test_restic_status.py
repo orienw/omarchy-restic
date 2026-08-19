@@ -54,6 +54,10 @@ class FakeRunner:
         systemd_unavailable: bool = False,
         monotonic_timer: str = "",
         duplicate_completion: bool = False,
+        history_age_hours: float = 1,
+        last_trigger_age_hours: float = 1,
+        next_run_hours: float = 23,
+        no_history: bool = False,
     ):
         self.active = active
         self.failed = failed
@@ -62,6 +66,10 @@ class FakeRunner:
         self.systemd_unavailable = systemd_unavailable
         self.monotonic_timer = monotonic_timer
         self.duplicate_completion = duplicate_completion
+        self.history_age_hours = history_age_hours
+        self.last_trigger_age_hours = last_trigger_age_hours
+        self.next_run_hours = next_run_hours
+        self.no_history = no_history
         self.calls: list[tuple[list[str], dict[str, str] | None]] = []
 
     def run(self, command: list[str], *, timeout: int, env: dict[str, str] | None = None):
@@ -97,11 +105,11 @@ class FakeRunner:
                 "ActiveState=active",
                 "SubState=waiting",
                 "UnitFileState=enabled",
-                f"LastTriggerUSec=@{epoch(NOW - timedelta(hours=1))}",
+                f"LastTriggerUSec=@{epoch(NOW - timedelta(hours=self.last_trigger_age_hours))}",
                 (
                     "NextElapseUSecRealtime="
                     if self.monotonic_timer
-                    else f"NextElapseUSecRealtime=@{epoch(NOW + timedelta(hours=23))}"
+                    else f"NextElapseUSecRealtime=@{epoch(NOW + timedelta(hours=self.next_run_hours))}"
                 ),
                 f"NextElapseUSecMonotonic={self.monotonic_timer}",
                 "Persistent=yes",
@@ -109,6 +117,12 @@ class FakeRunner:
             ])
             return subprocess.CompletedProcess(command, 0, output, "")
 
+        if self.no_history:
+            start_timestamp = ""
+            exit_timestamp = ""
+        else:
+            start_timestamp = f"@{epoch(NOW - timedelta(hours=self.history_age_hours, minutes=2))}"
+            exit_timestamp = " " if self.active else f"@{epoch(NOW - timedelta(hours=self.history_age_hours))}"
         output = "\n".join([
             "LoadState=loaded",
             f"ActiveState={'active' if self.active else 'inactive'}",
@@ -116,14 +130,16 @@ class FakeRunner:
             f"Result={'exit-code' if self.failed else 'success'}",
             "ExecMainCode=exited",
             f"ExecMainStatus={1 if self.failed else 0}",
-            f"ExecMainStartTimestamp=@{epoch(NOW - timedelta(hours=1, minutes=2))}",
-            f"ExecMainExitTimestamp={' ' if self.active else '@' + str(epoch(NOW - timedelta(hours=1)))}",
+            f"ExecMainStartTimestamp={start_timestamp}",
+            f"ExecMainExitTimestamp={exit_timestamp}",
         ])
         return subprocess.CompletedProcess(command, 0, output, "")
 
     def _history(self):
+        if self.no_history:
+            return subprocess.CompletedProcess([], 0, "", "")
         started = journal_entry(
-            NOW - timedelta(hours=1, minutes=2),
+            NOW - timedelta(hours=self.history_age_hours, minutes=2),
             restic_status.UNIT_STARTING,
             "Starting backup",
         )
@@ -131,14 +147,14 @@ class FakeRunner:
             return subprocess.CompletedProcess([], 0, started + "\n", "")
         if self.failed:
             finished = journal_entry(
-                NOW - timedelta(hours=1),
+                NOW - timedelta(hours=self.history_age_hours),
                 restic_status.UNIT_FAILED,
                 "Backup failed",
                 result="failed",
             )
         else:
             finished = journal_entry(
-                NOW - timedelta(hours=1),
+                NOW - timedelta(hours=self.history_age_hours),
                 restic_status.UNIT_STARTED,
                 "Backup completed",
                 result="done",
@@ -203,12 +219,14 @@ class DiscoveryRunner(FakeRunner):
         description: str = "restic backup of Documents to archive",
         list_error: bool = False,
         empty_shows: bool = False,
+        show_error: bool = False,
     ):
         super().__init__()
         self.script = script
         self.description = description
         self.list_error = list_error
         self.empty_shows = empty_shows
+        self.show_error = show_error
 
     def run(self, command: list[str], *, timeout: int, env: dict[str, str] | None = None):
         if command[0] == "systemctl" and "list-unit-files" in command:
@@ -241,6 +259,8 @@ class DiscoveryRunner(FakeRunner):
                 return subprocess.CompletedProcess(command, 0, f"Triggers={trigger}\n", "")
             if "Description" in properties:
                 self.calls.append((command, env))
+                if self.show_error and unit == "restic-documents.service":
+                    return subprocess.CompletedProcess(command, 1, "", "Failed to get properties")
                 if unit == "restic-documents.service":
                     output = "\n".join([
                         "LoadState=loaded",
@@ -298,6 +318,7 @@ class ResticStatusTest(unittest.TestCase):
         *,
         force: bool = False,
         config_path: Path | None = None,
+        now: datetime = NOW,
     ):
         return restic_status.collect_report(
             config_path if config_path is not None else self.config,
@@ -307,7 +328,7 @@ class ResticStatusTest(unittest.TestCase):
             log_lines=10,
             timeout=30,
             runner=runner,
-            now=NOW,
+            now=now,
         )
 
     def discovery_script(self) -> Path:
@@ -471,6 +492,29 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(recovered["jobs"][0]["id"], "restic-documents")
         self.assertEqual(recovered["jobs"][0]["source"], "systemd-cache")
 
+    def test_per_service_show_failure_reuses_cached_discovery(self):
+        config = self.root / "missing.json"
+        script = self.discovery_script()
+        self.collect(DiscoveryRunner(script), config_path=config)
+
+        report = self.collect(
+            DiscoveryRunner(script, show_error=True),
+            config_path=config,
+        )
+
+        self.assertEqual(len(report["jobs"]), 1)
+        self.assertEqual(report["jobs"][0]["id"], "restic-documents")
+        self.assertEqual(report["jobs"][0]["source"], "systemd-cache")
+        self.assertEqual(report["config"]["status"], "degraded")
+        self.assertIn("restic-documents.service", report["config"]["error"])
+
+        recovered = self.collect(
+            DiscoveryRunner(script, list_error=True),
+            config_path=config,
+        )
+        self.assertEqual(recovered["jobs"][0]["id"], "restic-documents")
+        self.assertEqual(recovered["jobs"][0]["source"], "systemd-cache")
+
     def test_discovery_requires_a_restic_backup_invocation(self):
         direct_backup = (
             "{ path=/usr/bin/restic ; argv[]=/usr/bin/restic backup /home ; "
@@ -595,6 +639,10 @@ class ResticStatusTest(unittest.TestCase):
                 "Authorization: Bearer auth-secret",
                 "Bearer standalone-secret",
                 "ordinary=value",
+                "RCLONE_CONFIG_PASS=rclone-secret",
+                "passphrase: gpg-secret",
+                "AZURE_STORAGE_SAS=sas-secret",
+                "bypass=true",
             )
         )
 
@@ -606,10 +654,14 @@ class ResticStatusTest(unittest.TestCase):
             "api-secret",
             "auth-secret",
             "standalone-secret",
+            "rclone-secret",
+            "gpg-secret",
+            "sas-secret",
         ):
             self.assertNotIn(secret, sanitized)
         self.assertIn("ordinary=value", sanitized)
-        self.assertGreaterEqual(sanitized.count("[redacted]"), 5)
+        self.assertIn("bypass=true", sanitized)
+        self.assertGreaterEqual(sanitized.count("[redacted]"), 8)
 
     def test_redaction_handles_unclosed_quoted_backslash_runs_in_linear_time(self):
         self.assertEqual(
@@ -674,6 +726,64 @@ class ResticStatusTest(unittest.TestCase):
         cached_report = self.collect(cached_runner)
         self.assertEqual(cached_report["jobs"][0]["repository"]["status"], "stale")
         self.assertFalse(any("snapshots" in command or "stats" in command for command, _ in cached_runner.calls))
+
+    def test_failed_repository_refresh_backs_off_until_the_attempt_window_passes(self):
+        self.collect(FakeRunner())
+        self.collect(FakeRunner(restic_error=1), force=True, now=NOW + timedelta(minutes=20))
+
+        backed_off = FakeRunner()
+        stale = self.collect(backed_off, now=NOW + timedelta(minutes=21))
+        self.assertEqual(stale["jobs"][0]["repository"]["status"], "stale")
+        self.assertFalse(
+            any("snapshots" in command or "stats" in command for command, _ in backed_off.calls)
+        )
+
+        recovered = FakeRunner()
+        ready = self.collect(recovered, now=NOW + timedelta(minutes=40))
+        self.assertTrue(any("snapshots" in command for command, _ in recovered.calls))
+        self.assertEqual(ready["jobs"][0]["repository"]["status"], "ready")
+
+    def test_forced_repository_refresh_bypasses_failure_backoff(self):
+        self.collect(FakeRunner())
+        self.collect(FakeRunner(restic_error=1), force=True, now=NOW + timedelta(minutes=20))
+
+        forced = FakeRunner()
+        self.collect(forced, force=True, now=NOW + timedelta(minutes=21))
+        self.assertTrue(any("snapshots" in command for command, _ in forced.calls))
+
+    def test_missing_run_history_uses_timer_trigger_as_deadline(self):
+        overdue = self.collect(FakeRunner(no_history=True, last_trigger_age_hours=100))
+        self.assertEqual(overdue["jobs"][0]["status"], "attention")
+        self.assertTrue(
+            any(issue["code"] == "run-unverified" for issue in overdue["jobs"][0]["issues"])
+        )
+
+        recent = self.collect(FakeRunner(no_history=True, last_trigger_age_hours=1))
+        self.assertEqual(recent["jobs"][0]["status"], "unknown")
+
+    def test_implicit_max_run_age_follows_timer_cadence(self):
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        del config["jobs"][0]["maxRunAgeHours"]
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+        runner = FakeRunner(
+            history_age_hours=144,
+            last_trigger_age_hours=144,
+            next_run_hours=24,
+        )
+
+        implicit = self.collect(runner)
+        self.assertEqual(implicit["jobs"][0]["status"], "healthy")
+        self.assertFalse(
+            any(issue["code"] == "run-overdue" for issue in implicit["jobs"][0]["issues"])
+        )
+
+        config["jobs"][0]["maxRunAgeHours"] = 36
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+        explicit = self.collect(runner)
+        self.assertEqual(explicit["jobs"][0]["status"], "attention")
+        self.assertTrue(
+            any(issue["code"] == "run-overdue" for issue in explicit["jobs"][0]["issues"])
+        )
 
     def test_partial_stats_failure_persists_in_fresh_cache(self):
         report = self.collect(FakeRunner(stats_error=True))
@@ -775,6 +885,25 @@ class ResticStatusTest(unittest.TestCase):
 
         self.assertEqual(report["config"]["status"], "error")
         self.assertIn("jobs[0].checkMaxAgeHours", report["config"]["error"])
+
+    def test_non_numeric_max_run_age_is_a_config_error(self):
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        config["jobs"][0]["maxRunAgeHours"] = "thirty"
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+
+        report = self.collect(FakeRunner())
+
+        self.assertEqual(report["config"]["status"], "error")
+        self.assertIn("jobs[0].maxRunAgeHours", report["config"]["error"])
+
+    def test_runner_terminates_timed_out_commands(self):
+        started = time.perf_counter()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            restic_status.Runner().run(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                timeout=1,
+            )
+        self.assertLess(time.perf_counter() - started, 10)
 
 
 if __name__ == "__main__":

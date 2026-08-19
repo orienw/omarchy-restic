@@ -216,14 +216,24 @@ class Runner:
         timeout: int,
         env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        process = subprocess.Popen(
             command,
-            capture_output=True,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=env,
             text=True,
-            timeout=timeout,
         )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def utc_now() -> datetime:
@@ -326,6 +336,12 @@ def credential_name(value: str) -> bool:
                 "passwords",
                 "passwd",
                 "passwds",
+                "pass",
+                "passphrase",
+                "passphrases",
+                "credential",
+                "credentials",
+                "sas",
                 "secret",
                 "secrets",
                 "token",
@@ -335,7 +351,7 @@ def credential_name(value: str) -> bool:
             }
             for part in parts
         )
-        or bool(re.search(r"(?:password|passwd|secret|token|key)s?$", compact))
+        or bool(re.search(r"(?:password|passwd|passphrase|secret|token|key|credential|sas)s?$", compact))
     )
 
 
@@ -377,10 +393,12 @@ def number(
     maximum: float,
     context: str,
 ) -> float:
+    if value is None:
+        return fallback
     try:
         result = float(value)
     except (TypeError, ValueError):
-        return fallback
+        raise ConfigError(f"{context} must be a number")
     if result < minimum or result > maximum:
         raise ConfigError(f"{context} must be between {minimum:g} and {maximum:g}")
     return result
@@ -438,6 +456,7 @@ def normalize_job(raw: Any, index: int) -> dict[str, Any]:
         "maxRunAgeHours": number(
             raw.get("maxRunAgeHours"), 36, 1, 8760, f"{context}.maxRunAgeHours"
         ),
+        "maxRunAgeExplicit": "maxRunAgeHours" in raw,
         "checkService": optional_unit(raw, "checkService", ".service", context),
         "checkTimer": optional_unit(raw, "checkTimer", ".timer", context),
         "checkMaxAgeHours": number(
@@ -917,7 +936,7 @@ def discovered_job(
         timeout,
     )
     if not shown["available"]:
-        return None
+        raise DiscoveryError(f"Could not inspect {service}: {shown.get('error', '')}")
 
     properties = shown["properties"]
     description = properties.get("Description", "")
@@ -982,6 +1001,7 @@ def discovered_job(
         "restic": executable,
         "tag": tag,
         "maxRunAgeHours": 36,
+        "maxRunAgeExplicit": False,
         "checkService": None,
         "checkTimer": None,
         "checkMaxAgeHours": 720,
@@ -990,18 +1010,23 @@ def discovered_job(
     }
 
 
-def discover_jobs(runner: Runner, timeout: int) -> list[dict[str, Any]]:
+def discover_jobs(runner: Runner, timeout: int) -> tuple[list[dict[str, Any]], list[str]]:
     jobs: list[dict[str, Any]] = []
+    failed_services: list[str] = []
     seen_services: set[str] = set()
     for timer in list_user_timers(runner, timeout):
         for service in timer_services(timer, runner, timeout):
             if service in seen_services:
                 continue
             seen_services.add(service)
-            job = discovered_job(service, timer, runner, timeout)
+            try:
+                job = discovered_job(service, timer, runner, timeout)
+            except DiscoveryError:
+                failed_services.append(service)
+                continue
             if job:
                 jobs.append(job)
-    return jobs
+    return jobs, failed_services
 
 
 def merge_jobs(
@@ -1054,6 +1079,10 @@ def service_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
 
     props = shown["properties"]
     active_state = props.get("ActiveState", "unknown")
+    try:
+        exit_status = int(props.get("ExecMainStatus", "0") or 0)
+    except (TypeError, ValueError):
+        exit_status = 0
     return {
         "unit": unit,
         "available": True,
@@ -1062,7 +1091,7 @@ def service_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
         "subState": props.get("SubState", "unknown"),
         "result": props.get("Result", ""),
         "exitCode": props.get("ExecMainCode", ""),
-        "exitStatus": int(props.get("ExecMainStatus", "0") or 0),
+        "exitStatus": exit_status,
         "startedAt": iso_from_systemd_timestamp(props.get("ExecMainStartTimestamp")),
         "finishedAt": iso_from_systemd_timestamp(props.get("ExecMainExitTimestamp")),
         "active": active_state in {"active", "activating", "reloading"},
@@ -1486,6 +1515,44 @@ def repository_cache_failure(
     return repository_from_cache(updated, status, "cache", error)
 
 
+def repository_none(status: str, error: str) -> dict[str, Any]:
+    return {
+        "status": status,
+        "source": "none",
+        "checkedAt": None,
+        "snapshotCount": 0,
+        "latestSnapshot": None,
+        "stats": {},
+        "error": error,
+    }
+
+
+def repository_uncached_failure(
+    path: Path,
+    key: str,
+    status: str,
+    error: str,
+    now: datetime,
+) -> dict[str, Any]:
+    try:
+        write_cache(
+            path,
+            {
+                "cacheKey": key,
+                "checkedAt": None,
+                "lastAttemptAt": isoformat(now),
+                "status": status,
+                "error": error,
+                "snapshotCount": 0,
+                "latestSnapshot": None,
+                "stats": {},
+            },
+        )
+    except OSError:
+        pass
+    return repository_none(status, error)
+
+
 def restic_failure_status(returncode: int) -> str:
     return "busy" if returncode == 11 else "unavailable"
 
@@ -1507,30 +1574,15 @@ def collect_repository(
     try:
         ensure_private_cache_directory(cache_dir, path.parent)
     except OSError as error:
-        message = f"Could not secure plugin cache: {sanitize(error)}"
-        return {
-            "status": "unavailable",
-            "source": "none",
-            "checkedAt": None,
-            "snapshotCount": 0,
-            "latestSnapshot": None,
-            "stats": {},
-            "error": message,
-        }
+        return repository_uncached_failure(
+            path, key, "unavailable", f"Could not secure plugin cache: {sanitize(error)}", now
+        )
     cached = load_cache(path, key)
 
     if active:
         if cached:
             return repository_from_cache(cached, "deferred", "cache", "Refresh deferred while backup is active")
-        return {
-            "status": "deferred",
-            "source": "none",
-            "checkedAt": None,
-            "snapshotCount": 0,
-            "latestSnapshot": None,
-            "stats": {},
-            "error": "Refresh deferred while backup is active",
-        }
+        return repository_none("deferred", "Refresh deferred while backup is active")
 
     if not force and cache_is_fresh(cached, now, cache_seconds):
         return repository_from_cache(
@@ -1540,45 +1592,64 @@ def collect_repository(
             str(cached.get("error") or ""),
         )
 
+    attempted = parse_iso(cached.get("lastAttemptAt") if cached else None)
+    if (
+        not force
+        and cached
+        and attempted
+        and (now - attempted).total_seconds() <= cache_seconds
+    ):
+        return repository_from_cache(
+            cached,
+            str(cached.get("status") or "stale"),
+            "cache",
+            str(cached.get("error") or ""),
+        )
+
     if job.get("discoveryError"):
         error = job["discoveryError"] + ". Add a jobs.json override for this service."
-        return repository_cache_failure(path, cached, "stale", error, now) if cached else {
-            "status": "unavailable", "source": "none", "checkedAt": None,
-            "snapshotCount": 0, "latestSnapshot": None, "stats": {}, "error": error,
-        }
+        return (
+            repository_cache_failure(path, cached, "stale", error, now)
+            if cached
+            else repository_uncached_failure(path, key, "unavailable", error, now)
+        )
 
     repository_file = Path(job["repositoryFile"])
     password_file = Path(job["passwordFile"])
     if not repository_file.is_file():
         error = f"Repository file not found: {repository_file}"
-        return repository_cache_failure(path, cached, "stale", error, now) if cached else {
-            "status": "unavailable", "source": "none", "checkedAt": None,
-            "snapshotCount": 0, "latestSnapshot": None, "stats": {}, "error": error,
-        }
+        return (
+            repository_cache_failure(path, cached, "stale", error, now)
+            if cached
+            else repository_uncached_failure(path, key, "unavailable", error, now)
+        )
     if not password_file.is_file():
         error = f"Password file not found: {password_file}"
-        return repository_cache_failure(path, cached, "stale", error, now) if cached else {
-            "status": "unavailable", "source": "none", "checkedAt": None,
-            "snapshotCount": 0, "latestSnapshot": None, "stats": {}, "error": error,
-        }
+        return (
+            repository_cache_failure(path, cached, "stale", error, now)
+            if cached
+            else repository_uncached_failure(path, key, "unavailable", error, now)
+        )
 
     restic = resolve_restic(job["restic"])
     if not restic:
         error = f"Restic command not found: {job['restic']}"
-        return repository_cache_failure(path, cached, "stale", error, now) if cached else {
-            "status": "unavailable", "source": "none", "checkedAt": None,
-            "snapshotCount": 0, "latestSnapshot": None, "stats": {}, "error": error,
-        }
+        return (
+            repository_cache_failure(path, cached, "stale", error, now)
+            if cached
+            else repository_uncached_failure(path, key, "unavailable", error, now)
+        )
 
     restic_cache_dir = path.parent / "restic" / job["id"]
     try:
         ensure_private_cache_directory(cache_dir, restic_cache_dir)
     except OSError as error:
         message = f"Could not create restic cache: {sanitize(error)}"
-        return repository_cache_failure(path, cached, "stale", message, now) if cached else {
-            "status": "unavailable", "source": "none", "checkedAt": None,
-            "snapshotCount": 0, "latestSnapshot": None, "stats": {}, "error": message,
-        }
+        return (
+            repository_cache_failure(path, cached, "stale", message, now)
+            if cached
+            else repository_uncached_failure(path, key, "unavailable", message, now)
+        )
 
     base = restic_command(job, restic, restic_cache_dir)
     snapshot_command = base + ["snapshots"]
@@ -1588,10 +1659,11 @@ def collect_repository(
         snapshots_result = runner.run(snapshot_command, timeout=timeout, env=restic_environment())
     except (OSError, subprocess.TimeoutExpired) as error:
         message = sanitize(error)
-        return repository_cache_failure(path, cached, "stale", message, now) if cached else {
-            "status": "unavailable", "source": "none", "checkedAt": None,
-            "snapshotCount": 0, "latestSnapshot": None, "stats": {}, "error": message,
-        }
+        return (
+            repository_cache_failure(path, cached, "stale", message, now)
+            if cached
+            else repository_uncached_failure(path, key, "unavailable", message, now)
+        )
 
     if snapshots_result.returncode != 0:
         status = restic_failure_status(snapshots_result.returncode)
@@ -1600,15 +1672,7 @@ def collect_repository(
             if status == "busy":
                 return repository_from_cache(cached, "deferred", "cache", message)
             return repository_cache_failure(path, cached, "stale", message, now)
-        return {
-            "status": status,
-            "source": "none",
-            "checkedAt": None,
-            "snapshotCount": 0,
-            "latestSnapshot": None,
-            "stats": {},
-            "error": message,
-        }
+        return repository_uncached_failure(path, key, status, message, now)
 
     try:
         raw_snapshots = json.loads(snapshots_result.stdout)
@@ -1616,10 +1680,11 @@ def collect_repository(
         raw_snapshots = None
     if not isinstance(raw_snapshots, list):
         message = "Restic returned invalid snapshot JSON"
-        return repository_cache_failure(path, cached, "stale", message, now) if cached else {
-            "status": "unavailable", "source": "none", "checkedAt": None,
-            "snapshotCount": 0, "latestSnapshot": None, "stats": {}, "error": message,
-        }
+        return (
+            repository_cache_failure(path, cached, "stale", message, now)
+            if cached
+            else repository_uncached_failure(path, key, "unavailable", message, now)
+        )
 
     snapshots = [normalized_snapshot(item) for item in raw_snapshots if isinstance(item, dict)]
     snapshots.sort(
@@ -1678,6 +1743,14 @@ def age_hours(value: str | None, now: datetime) -> float | None:
     if not parsed:
         return None
     return max(0.0, (now - parsed).total_seconds() / 3600)
+
+
+def timer_interval_hours(timer: dict[str, Any]) -> float | None:
+    last = parse_iso(timer.get("lastTriggerAt"))
+    upcoming = parse_iso(timer.get("nextRunAt"))
+    if not last or not upcoming or upcoming <= last:
+        return None
+    return (upcoming - last).total_seconds() / 3600
 
 
 def issue(code: str, message: str, severity: str = "warning") -> dict[str, str]:
@@ -1786,12 +1859,25 @@ def evaluate_job(
 
     last_run = service.get("lastRun")
     last_success = service.get("lastSuccessAt")
+    max_age = job["maxRunAgeHours"]
+    if not job.get("maxRunAgeExplicit"):
+        interval = timer_interval_hours(timer)
+        if interval:
+            max_age = max(max_age, interval + 12)
     if last_run and last_run.get("result") == "failed":
         issues.append(issue("last-run-failed", last_run.get("message") or "Last run failed", "critical"))
     elif last_success:
         hours = age_hours(last_success, now)
-        if hours is not None and hours > job["maxRunAgeHours"]:
+        if hours is not None and hours > max_age:
             issues.append(issue("run-overdue", f"No successful run in {int(hours)} hours", "critical"))
+    elif timer.get("available") and timer.get("lastTriggerAt"):
+        hours = age_hours(timer.get("lastTriggerAt"), now)
+        if hours is not None and hours > max_age:
+            issues.append(issue(
+                "run-unverified",
+                f"Timer last triggered {int(hours)} hours ago without a verified successful run",
+                "warning",
+            ))
 
     if repository["status"] in {"unavailable", "stale"}:
         message = repository.get("error") or "Repository metadata is unavailable"
@@ -1891,7 +1977,19 @@ def collect_report(
     discovery_path = discovery_cache_file(cache_dir, config_path)
     discovery_error = ""
     try:
-        discovered_jobs = discover_jobs(runner, timeout)
+        discovered_jobs, failed_services = discover_jobs(runner, timeout)
+        if failed_services:
+            cached_jobs = load_discovery_cache(discovery_path) or []
+            cached_by_service = {job["service"]: job for job in cached_jobs}
+            for service in failed_services:
+                cached = cached_by_service.get(service)
+                if cached:
+                    discovered_jobs.append(cached)
+            discovery_error = (
+                "Could not inspect "
+                + ", ".join(failed_services)
+                + "; using cached discovery"
+            )
         try:
             save_discovery_cache(discovery_path, discovered_jobs, cache_dir)
         except OSError:

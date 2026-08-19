@@ -28,8 +28,29 @@ ShellRoot {
         root.fail("byte formatting failed: " + Model.formatBytes(1073741824))
         return
       }
-      if (Model.relativeTime("2026-08-17T11:00:00Z", Date.parse("2026-08-17T12:00:00Z")) !== "1 hour ago") {
+      var nowMs = Date.parse("2026-08-17T12:00:00Z")
+      if (Model.relativeTime("2026-08-17T11:00:00Z", nowMs) !== "1 hour ago") {
         root.fail("relative time formatting failed")
+        return
+      }
+      if (Model.relativeTime(new Date(nowMs - 115000).toISOString(), nowMs) !== "2 minutes ago") {
+        root.fail("115s relative time should round to 2 minutes")
+        return
+      }
+      if (Model.relativeTime(new Date(nowMs - 5400000).toISOString(), nowMs) !== "2 hours ago") {
+        root.fail("5400s relative time should round to 2 hours")
+        return
+      }
+      if (Model.relativeTime(new Date(nowMs - 138240000).toISOString(), nowMs) !== "2 days ago") {
+        root.fail("138240s relative time should round to 2 days")
+        return
+      }
+      if (Model.formatDuration(3599) !== "1h 0m") {
+        root.fail("3599s should format as 1h 0m: " + Model.formatDuration(3599))
+        return
+      }
+      if (Model.formatDuration(7170) !== "2h 0m") {
+        root.fail("7170s should format as 2h 0m: " + Model.formatDuration(7170))
         return
       }
       if (Model.futureTime("2026-08-17T15:00:00Z", Date.parse("2026-08-17T12:00:00Z")) !== "In 3 hours") {
@@ -87,6 +108,23 @@ ShellRoot {
         integrity: { status: "attention" }
       }) !== true) {
         root.fail("integrity failures should start expanded")
+        return
+      }
+      if (Model.reportMeta(null, true) !== "Refreshing status") {
+        root.fail("null report while refreshing should say refreshing")
+        return
+      }
+      if (Model.reportMeta({schemaVersion: 1, generatedAt: null, summary: {jobs: 0}}, true) !== "Refreshing status") {
+        root.fail("stub report while refreshing should say refreshing")
+        return
+      }
+      if (Model.reportMeta({
+        schemaVersion: 1,
+        generatedAt: "2026-08-17T12:00:00Z",
+        overallStatus: "healthy",
+        summary: { jobs: 2, healthy: 2, running: 0, attention: 0, unknown: 0 }
+      }, true) !== "2 jobs checked") {
+        root.fail("real report while refreshing should keep job counts")
         return
       }
       console.log("model tests passed")

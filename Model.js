@@ -34,11 +34,11 @@ function relativeTime(value, nowMs) {
   var delta = Math.max(0, (Number(nowMs || Date.now()) - timestamp) / 1000)
   if (delta < 45) return "Just now"
   if (delta < 90) return "1 minute ago"
-  if (delta < 3600) return Math.floor(delta / 60) + " minutes ago"
+  if (delta < 3600) return Math.round(delta / 60) + " minutes ago"
   if (delta < 5400) return "1 hour ago"
-  if (delta < 86400) return Math.floor(delta / 3600) + " hours ago"
+  if (delta < 86400) return Math.round(delta / 3600) + " hours ago"
   if (delta < 129600) return "1 day ago"
-  if (delta < 604800) return Math.floor(delta / 86400) + " days ago"
+  if (delta < 604800) return Math.round(delta / 86400) + " days ago"
   if (delta < 1209600) return "1 week ago"
   return Math.floor(delta / 604800) + " weeks ago"
 }
@@ -60,7 +60,8 @@ function futureTime(value, nowMs) {
 function formatBytes(value) {
   var bytes = Number(value)
   if (!isFinite(bytes) || bytes < 0) return "Unknown"
-  if (bytes < 1024) return Math.round(bytes) + " B"
+  var rounded = Math.round(bytes)
+  if (rounded < 1024) return rounded + " B"
   var units = ["KiB", "MiB", "GiB", "TiB", "PiB"]
   var size = bytes
   var index = -1
@@ -76,10 +77,10 @@ function formatDuration(value) {
   var seconds = Number(value)
   if (!isFinite(seconds) || seconds < 0) return "Unknown"
   if (seconds < 60) return Math.max(1, Math.round(seconds)) + "s"
-  if (seconds < 3600) return Math.round(seconds / 60) + "m"
-  var hours = Math.floor(seconds / 3600)
-  var minutes = Math.round((seconds % 3600) / 60)
-  return hours + "h " + minutes + "m"
+  var totalMinutes = Math.round(seconds / 60)
+  if (totalMinutes < 60) return totalMinutes + "m"
+  var hours = Math.floor(totalMinutes / 60)
+  return hours + "h " + (totalMinutes % 60) + "m"
 }
 
 function count(value, singular, plural) {
@@ -165,8 +166,8 @@ function detailsDefaultOpen(job) {
 }
 
 function reportMeta(report, refreshing) {
-  if (refreshing) return "Refreshing status"
-  if (!report || !report.summary) return "Waiting for status"
+  if (!report || !report.summary || !report.generatedAt)
+    return refreshing ? "Refreshing status" : "Waiting for status"
   var jobs = Number(report.summary.jobs || 0)
   if (jobs === 0) return "No Restic jobs found"
   if (report.overallStatus === "attention")

@@ -17,7 +17,7 @@ Version 0.1 answers one question quickly: are the backup jobs actually running s
 - Optional integrity-check service health
 - Redacted recent logs when a job needs attention
 
-Health follows completed systemd runs, not snapshot age. This matters when a backup uses `--skip-if-unchanged`, because a successful unchanged run intentionally creates no snapshot.
+Health follows completed systemd runs, not snapshot age. When no run history survives, the timer's last trigger time is used as a fallback deadline signal. This matters when a backup uses `--skip-if-unchanged`, because a successful unchanged run intentionally creates no snapshot.
 
 Repository statistics are supplementary. If snapshots can be read but the stats query fails, the job stays healthy and the card reports that statistics are unavailable.
 
@@ -31,7 +31,7 @@ The plugin is read-only. It runs only:
 - `restic snapshots --json`
 - `restic stats --json --mode raw-data`
 
-Discovery reads user unit files, referenced environment files, and local wrapper scripts as plain text. It never sources them. Repository commands use normal restic locking. They are deferred whenever the matching service is observed active, and normal locking protects the race if a job starts between checks. Successful metadata is cached for later display. Cache directories use mode `0700`, and cache files use mode `0600`. Restic receives a private cache directory under the plugin cache. The plugin never uses `--no-lock`, reads password contents itself, starts jobs, prunes snapshots, unlocks repositories, or changes restic configuration.
+Discovery reads user unit files, referenced environment files, and local wrapper scripts as plain text. It never sources them. Repository commands use normal restic locking. They are deferred whenever the matching service is observed active, and normal locking protects the race if a job starts between checks. Successful metadata is cached for later display. After a failed repository refresh, the plugin waits one repository refresh interval before trying again, unless a refresh is forced. Cache directories use mode `0700`, and cache files use mode `0600`. Restic receives a private cache directory under the plugin cache. The plugin never uses `--no-lock`, reads password contents itself, starts jobs, prunes snapshots, unlocks repositories, or changes restic configuration.
 
 ## Requirements
 
@@ -59,7 +59,7 @@ The plugin discovers Restic jobs automatically. It lists user systemd timers, re
 
 Discovery never sources or executes a backup script. Direct Restic commands and static shell assignments are supported. Dynamic command construction, repository URLs without repository files, and unusual credential loading need an override.
 
-Discovered job identifiers come from the service unit name, so changing a unit description only changes the label. The last successful discovered job set is cached. If timer discovery later fails, the existing cards remain visible while the panel reports that verification is degraded.
+Discovered job identifiers come from the service unit name, so changing a unit description only changes the label. The last successful discovered job set is cached. If timer discovery later fails, the existing cards remain visible while the panel reports that verification is degraded. If a single service cannot be inspected, its cached definition is reused the same way.
 
 ## Optional job overrides
 
@@ -103,7 +103,7 @@ Job fields:
 | `passwordFile` | Yes | Restic repository password file |
 | `restic` | No | Executable name or path, defaults to `restic` |
 | `tag` | No | Restricts snapshots and stats to one restic tag |
-| `maxRunAgeHours` | No | Successful-run deadline, defaults to 36 hours |
+| `maxRunAgeHours` | No | Successful-run deadline. Defaults to 36 hours, extended automatically to the observed timer interval plus 12 hours when not set explicitly. |
 | `checkService` | No | Existing user service that runs `restic check` |
 | `checkTimer` | No | Timer for the integrity-check service |
 | `checkMaxAgeHours` | No | Integrity-check deadline, defaults to 720 hours |
