@@ -580,15 +580,6 @@ def read_static_text(path: Path) -> str:
     return "" if "\0" in text else text
 
 
-def directive_values(text: str, directive: str) -> list[str]:
-    prefix = directive + "="
-    return [
-        line.strip()[len(prefix) :].strip()
-        for line in text.replace("\\\n", " ").splitlines()
-        if line.strip().startswith(prefix)
-    ]
-
-
 def environment_file_paths(value: str, variables: dict[str, str]) -> list[Path]:
     paths: list[Path] = []
     for match in ENVIRONMENT_FILE.finditer(value):
@@ -858,7 +849,7 @@ def parse_properties(output: str) -> dict[str, str]:
     for line in output.splitlines():
         key, separator, value = line.partition("=")
         if separator:
-            if key in {"TimersCalendar", "TimersMonotonic"} and key in result:
+            if key in {"EnvironmentFiles", "TimersCalendar", "TimersMonotonic"} and key in result:
                 result[key] += "\n" + value
             else:
                 result[key] = value
@@ -937,7 +928,7 @@ def discovered_job(
 ) -> dict[str, Any] | None:
     shown = systemd_show(
         service,
-        ["LoadState", "Description", "FragmentPath", "ExecStart", "Environment", "EnvironmentFiles"],
+        ["LoadState", "Description", "ExecStart", "Environment", "EnvironmentFiles"],
         runner,
         timeout,
     )
@@ -946,7 +937,6 @@ def discovered_job(
 
     properties = shown["properties"]
     description = properties.get("Description", "")
-    fragment_text = read_static_text(Path(properties.get("FragmentPath", "")))
     exec_text = properties.get("ExecStart", "")
     entries = exec_entries(exec_text)
     script_text = "\n".join(
@@ -958,17 +948,10 @@ def discovered_job(
         return None
 
     variables = static_variables()
+    parse_environment(properties.get("Environment", ""), variables)
     environment_files = environment_file_paths(properties.get("EnvironmentFiles", ""), variables)
-    for directive in directive_values(fragment_text, "EnvironmentFile"):
-        expanded = expand_static_value(directive.lstrip("-"), variables)
-        if expanded:
-            environment_files.append(expanded_path(expanded))
     for path in environment_files:
         parse_assignments(read_static_text(path), variables)
-
-    parse_environment(properties.get("Environment", ""), variables)
-    for directive in directive_values(fragment_text, "Environment"):
-        parse_environment(directive, variables)
     parse_assignments(script_text, variables)
 
     command_text = exec_text + "\n" + script_text

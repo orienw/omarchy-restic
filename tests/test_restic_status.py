@@ -450,6 +450,40 @@ class ResticStatusTest(unittest.TestCase):
             any("snapshots" in command or "stats" in command for command, _ in renamed_runner.calls)
         )
 
+    def test_environment_files_override_unit_environment_in_declared_order(self):
+        first = self.root / "first.env"
+        second = self.root / "second.env"
+        first.write_text(f'RESTIC_REPOSITORY_FILE="{self.root / "first-repo"}"\nRESTIC_PASSWORD_FILE="{self.password}"\n')
+        second.write_text(f'RESTIC_REPOSITORY_FILE="{self.repository}"\n')
+        properties = restic_status.parse_properties("\n".join([
+            "ExecStart={ path=/usr/bin/restic ; argv[]=/usr/bin/restic backup /home ; ignore_errors=no ; }",
+            "Environment=RESTIC_REPOSITORY_FILE=/old/repo RESTIC_PASSWORD_FILE=/old/password",
+            f"EnvironmentFiles={first} (ignore_errors=no)",
+            f"EnvironmentFiles={second} (ignore_errors=no)",
+        ]))
+        with patch.object(restic_status, "systemd_show", return_value={"available": True, "properties": properties}):
+            job = restic_status.discovered_job("backup.service", "backup.timer", FakeRunner(), 5)
+        self.assertEqual(job["repositoryFile"], str(self.repository))
+        self.assertEqual(job["passwordFile"], str(self.password))
+        self.assertEqual(job["discoveryError"], "")
+
+    def test_effective_environment_preserves_drop_ins_and_environment_file_resets(self):
+        old_environment = self.root / "old.env"
+        old_environment.write_text("RESTIC_REPOSITORY_FILE=/old/file-repo\n")
+        fragment = self.root / "backup.service"
+        fragment.write_text(f"[Service]\nEnvironment=RESTIC_REPOSITORY_FILE=/old/base-repo\nEnvironmentFile={old_environment}\n")
+        properties = {
+            "FragmentPath": str(fragment),
+            "ExecStart": "{ path=/usr/bin/restic ; argv[]=/usr/bin/restic backup /home ; ignore_errors=no ; }",
+            "Environment": f"RESTIC_REPOSITORY_FILE={self.repository} RESTIC_PASSWORD_FILE={self.password}",
+            "EnvironmentFiles": "",
+        }
+        with patch.object(restic_status, "systemd_show", return_value={"available": True, "properties": properties}):
+            job = restic_status.discovered_job("backup.service", "backup.timer", FakeRunner(), 5)
+        self.assertEqual(job["repositoryFile"], str(self.repository))
+        self.assertEqual(job["passwordFile"], str(self.password))
+        self.assertEqual(job["discoveryError"], "")
+
     def test_discovery_failure_uses_last_discovered_jobs(self):
         config = self.root / "missing.json"
         self.collect(

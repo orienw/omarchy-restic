@@ -33,7 +33,7 @@ The plugin is read-only. It runs only:
 - `restic snapshots --json`
 - `restic stats --json --mode raw-data`
 
-Discovery reads user unit files, referenced environment files, and local wrapper scripts as plain text. It never sources them.
+Discovery inspects effective user-unit properties, including drop-ins, and reads referenced environment files and local wrapper scripts as plain text. It never sources them. Environment files override unit environment settings in their declared order.
 
 Repository commands use normal restic locking and are deferred while the matching service is active. The lock protects the race if a job starts between checks. Successful metadata is cached for later display. After a failed refresh, the plugin waits one repository refresh interval before trying again, unless a refresh is forced. Cache directories use mode `0700`, cache files use mode `0600`, and restic gets a private cache directory under the plugin cache.
 
