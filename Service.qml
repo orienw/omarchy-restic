@@ -32,10 +32,16 @@ Item {
     config: { status: "unknown", error: "" },
     jobs: []
   })
-  property string lastError: ""
+  property double nowMs: Date.now()
+  property string _collectorError: ""
+  readonly property bool reportStale: !isFinite(Date.parse(generatedAt))
+    || nowMs - Date.parse(generatedAt) > Math.max(120, refreshIntervalSec * 2) * 1000
+  readonly property string lastError: _collectorError
+    || (reportStale && generatedAt !== "" ? "Backup status is out of date" : "")
 
   readonly property var jobs: report && Array.isArray(report.jobs) ? report.jobs : []
-  readonly property string overallStatus: report ? String(report.overallStatus || "unknown") : "unknown"
+  readonly property string overallStatus: lastError !== "" || reportStale
+    ? "unknown" : String(report.overallStatus || "unknown")
   readonly property int attentionJobs: report && report.summary ? Number(report.summary.attention || 0) : 0
   readonly property int runningJobs: report && report.summary ? Number(report.summary.running || 0) : 0
   readonly property string generatedAt: report ? String(report.generatedAt || "") : ""
@@ -44,6 +50,7 @@ Item {
   property string _stdout: ""
   property string _stderr: ""
   property bool _stdoutDone: false
+  property bool _stderrDone: false
   property bool _exited: false
   property int _exitCode: 0
 
@@ -92,6 +99,7 @@ Item {
     _stdout = ""
     _stderr = ""
     _stdoutDone = false
+    _stderrDone = false
     _exited = false
     refreshing = true
     var command = [
@@ -109,11 +117,12 @@ Item {
   function applyReport(raw) {
     var parsed = Model.parseReport(raw)
     if (!parsed.ok) {
-      lastError = parsed.error
+      _collectorError = parsed.error
       return false
     }
     report = parsed.report
-    lastError = ""
+    nowMs = Date.now()
+    _collectorError = ""
     return true
   }
 
@@ -123,10 +132,12 @@ Item {
   }
 
   function _finalize() {
-    if (!_stdoutDone || !_exited) return
+    if (!_stdoutDone || !_stderrDone || !_exited) return
     refreshing = false
-    if (!applyReport(_stdout))
-      lastError = elideError(_stderr || _stdout || "Restic status collector failed with exit " + _exitCode)
+    if (_exitCode !== 0)
+      _collectorError = elideError(_stderr || "Restic status collector failed with exit " + _exitCode)
+    else if (!applyReport(_stdout) && _stderr !== "")
+      _collectorError = elideError(_stderr)
     if (forcePending) {
       forcePending = false
       Qt.callLater(function() { root.refresh(true) })
@@ -144,6 +155,13 @@ Item {
     repeat: true
     running: root.initialized
     onTriggered: root.refresh(false)
+  }
+
+  Timer {
+    interval: 15000
+    repeat: true
+    running: root.generatedAt !== ""
+    onTriggered: root.nowMs = Date.now()
   }
 
   Timer {
@@ -167,7 +185,11 @@ Item {
     }
     stderr: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root._stderr = text
+      onStreamFinished: {
+        root._stderr = text
+        root._stderrDone = true
+        root._finalize()
+      }
     }
     onExited: function(exitCode) {
       root._exitCode = exitCode

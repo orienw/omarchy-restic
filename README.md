@@ -18,6 +18,8 @@ It tells you whether your backups are running.
 
 Health follows completed systemd runs, not snapshot age. This matters when a backup uses `--skip-if-unchanged`, because a successful unchanged run intentionally creates no snapshot. If no run history survives, the timer's last trigger time is used instead.
 
+If collection fails or status is older than two refresh intervals (at least two minutes), the bar reports unknown and the panel explains why. Previously collected job details remain visible.
+
 Repository statistics are supplementary. If snapshots can be read but the stats query fails, the job stays healthy and the card reports that statistics are unavailable.
 
 ## Safety boundary

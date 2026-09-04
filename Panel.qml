@@ -106,7 +106,9 @@ Panel {
           PanelHero {
             width: parent.width
             title: "Restic"
-            meta: Model.reportMeta(root.report, root.resticService && root.resticService.refreshing)
+            meta: root.resticService && root.resticService.lastError !== ""
+              ? "Verification incomplete"
+              : Model.reportMeta(root.report, root.resticService && root.resticService.refreshing)
             detail: root.jobs.length > 0 ? String(root.jobs.length) + (root.jobs.length === 1 ? " JOB" : " JOBS") : ""
             foreground: root.foreground
             fontFamily: root.fontFamily

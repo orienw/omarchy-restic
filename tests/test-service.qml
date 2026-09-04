@@ -18,7 +18,7 @@ ShellRoot {
     onLoaded: {
       var report = {
         schemaVersion: 1,
-        generatedAt: "2026-08-17T12:00:00Z",
+        generatedAt: new Date().toISOString(),
         overallStatus: "attention",
         summary: { jobs: 2, healthy: 1, running: 0, attention: 1, unknown: 0 },
         config: { status: "ready", error: "" },
@@ -43,12 +43,51 @@ ShellRoot {
       var service = serviceLoader.item
       if (!service || service.overallStatus !== "attention"
           || service.attentionJobs !== 1 || service.jobs.length !== 2
-          || service.generatedAt !== "2026-08-17T12:00:00Z") {
+          || service.generatedAt === "") {
         root.fail("service properties did not follow the report")
         return
       }
-      if (service.applyReport("not-json") || service.lastError === "") {
-        root.fail("service accepted invalid collector output")
+      var healthy = JSON.stringify({
+        schemaVersion: 1, generatedAt: new Date().toISOString(), overallStatus: "healthy",
+        summary: {jobs: 1, healthy: 1, running: 0, attention: 0, unknown: 0},
+        config: {status: "ready", error: ""}, jobs: [{id: "home", status: "healthy"}]
+      })
+      service.applyReport(healthy)
+      if (service.overallStatus !== "healthy" || service.applyReport("not-json")
+          || service.lastError === "" || service.overallStatus !== "unknown"
+          || service.jobs.length !== 1) {
+        root.fail("invalid output did not invalidate healthy status while retaining cached jobs")
+        return
+      }
+      service.applyReport(healthy)
+      service.refreshing = true
+      service._stdout = healthy
+      service._exitCode = 1
+      service._stdoutDone = true
+      service._exited = true
+      service._finalize()
+      if (!service.refreshing) {
+        root.fail("collector finalized before stderr arrived")
+        return
+      }
+      service._stderr = "Collector failed"
+      service._stderrDone = true
+      service._finalize()
+      if (service.refreshing || service.overallStatus !== "unknown"
+          || service.lastError !== "Collector failed") {
+        root.fail("failed collector exit preserved healthy status")
+        return
+      }
+      service.applyReport(healthy)
+      service.nowMs += 121000
+      service.refreshing = true
+      if (service.overallStatus !== "unknown" || !service.reportStale || service.lastError === "") {
+        root.fail("stale status remained healthy during a hung refresh")
+        return
+      }
+      service.applyReport(healthy)
+      if (service.overallStatus !== "healthy" || service.lastError !== "") {
+        root.fail("fresh status did not recover after collection failure or expiry")
         return
       }
       console.log("service tests passed")
