@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1051,6 +1053,37 @@ class ResticStatusTest(unittest.TestCase):
                 timeout=1,
             )
         self.assertLess(time.perf_counter() - started, 10)
+
+    def test_runner_kills_descendants_and_bounds_pipe_cleanup(self):
+        for detached in (False, True):
+            with self.subTest(detached=detached):
+                pid_file = self.root / "child.pid"
+                code = "\n".join([
+                    "import signal, subprocess, sys, time",
+                    "from pathlib import Path",
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
+                    f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session={detached!r})",
+                    "Path(sys.argv[1]).write_text(str(child.pid))",
+                    "time.sleep(60)",
+                ])
+                started = time.perf_counter()
+                try:
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        restic_status.Runner().run([sys.executable, "-c", code, str(pid_file)], timeout=1)
+                    self.assertLess(time.perf_counter() - started, 14)
+                    child_pid = int(pid_file.read_text())
+                    if not detached:
+                        try:
+                            state = Path(f"/proc/{child_pid}/stat").read_text().split(") ", 1)[1].split()[0]
+                        except FileNotFoundError:
+                            state = None
+                        self.assertIn(state, (None, "Z"))
+                finally:
+                    if pid_file.exists():
+                        try:
+                            os.kill(int(pid_file.read_text()), signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
 
 
 if __name__ == "__main__":

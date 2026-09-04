@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -222,16 +223,27 @@ class Runner:
             stderr=subprocess.PIPE,
             env=env,
             text=True,
+            start_new_session=True,
         )
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            process.terminate()
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(process.pid, sig)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.communicate(timeout=5)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+            process.stdout.close()
+            process.stderr.close()
             try:
-                process.communicate(timeout=5)
+                process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                process.kill()
-                process.communicate()
+                pass
             raise
         return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
