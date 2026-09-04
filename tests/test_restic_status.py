@@ -58,6 +58,7 @@ class FakeRunner:
         last_trigger_age_hours: float = 1,
         next_run_hours: float = 23,
         no_history: bool = False,
+        calendar: str = "daily UTC",
     ):
         self.active = active
         self.failed = failed
@@ -70,10 +71,13 @@ class FakeRunner:
         self.last_trigger_age_hours = last_trigger_age_hours
         self.next_run_hours = next_run_hours
         self.no_history = no_history
+        self.calendar = calendar
         self.calls: list[tuple[list[str], dict[str, str] | None]] = []
 
     def run(self, command: list[str], *, timeout: int, env: dict[str, str] | None = None):
         self.calls.append((command, env))
+        if command[0] == "systemd-analyze":
+            return subprocess.run(command, timeout=timeout, env=env, text=True, capture_output=True)
         if command[0] == "systemctl":
             if "list-unit-files" in command:
                 return subprocess.CompletedProcess(command, 0, "", "")
@@ -114,6 +118,7 @@ class FakeRunner:
                 f"NextElapseUSecMonotonic={self.monotonic_timer}",
                 "Persistent=yes",
                 "WakeSystem=no",
+                f"TimersCalendar={{ OnCalendar={self.calendar} ; next_elapse=n/a }}" if self.calendar else "TimersCalendar=",
             ])
             return subprocess.CompletedProcess(command, 0, output, "")
 
@@ -769,6 +774,7 @@ class ResticStatusTest(unittest.TestCase):
             history_age_hours=144,
             last_trigger_age_hours=144,
             next_run_hours=24,
+            calendar="Tue *-*-* 12:00:00 UTC",
         )
 
         implicit = self.collect(runner)
@@ -784,6 +790,57 @@ class ResticStatusTest(unittest.TestCase):
         self.assertTrue(
             any(issue["code"] == "run-overdue" for issue in explicit["jobs"][0]["issues"])
         )
+
+    def test_missed_triggers_cannot_extend_implicit_deadlines(self):
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        del config["jobs"][0]["maxRunAgeHours"]
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+        for no_history in (False, True):
+            with self.subTest(no_history=no_history):
+                report = self.collect(FakeRunner(
+                    history_age_hours=720, last_trigger_age_hours=720,
+                    next_run_hours=23, no_history=no_history,
+                ))
+                self.assertEqual(report["jobs"][0]["status"], "attention")
+                code = "run-unverified" if no_history else "run-overdue"
+                self.assertTrue(any(issue["code"] == code for issue in report["jobs"][0]["issues"]))
+
+    def test_calendar_deadlines_follow_irregular_schedules_and_timezones(self):
+        cases = [
+            (["Mon..Fri *-*-* 12:00:00 UTC"], "2026-09-04T12:01:00Z", 72 - 1 / 60),
+            (["monthly UTC"], "2026-08-01T00:00:00Z", 31 * 24),
+            (["*-*-* 03:30:00 America/Los_Angeles"], "2026-09-04T10:31:00Z", 24 - 1 / 60),
+            (["weekly UTC", "daily UTC"], "2026-09-04T00:00:00Z", 24),
+        ]
+        for calendar, reference, expected in cases:
+            with self.subTest(calendar=calendar):
+                self.assertAlmostEqual(restic_status.timer_interval_hours(
+                    {"calendar": calendar}, reference, restic_status.Runner(), 5,
+                ), expected)
+
+    def test_monotonic_cadence_and_calendar_failure_use_bounded_deadlines(self):
+        timer = {"intervalsSec": [7 * 86400], "randomizedDelaySec": 600}
+        self.assertAlmostEqual(restic_status.timer_interval_hours(
+            timer, restic_status.isoformat(NOW), FakeRunner(), 5,
+        ), 168 + 1 / 6)
+        with patch.object(FakeRunner, "run", side_effect=OSError("not found")):
+            self.assertIsNone(restic_status.timer_interval_hours(
+                {"calendar": ["weekly UTC"]}, restic_status.isoformat(NOW), FakeRunner(), 5,
+            ))
+
+    def test_timer_schedule_preserves_repeated_systemd_properties(self):
+        properties = restic_status.parse_properties("\n".join([
+            "TimersMonotonic={ OnUnitActiveUSec=1d ; next_elapse=0 }",
+            "TimersMonotonic={ OnStartupUSec=5min ; next_elapse=0 }",
+            "TimersCalendar={ OnCalendar=weekly UTC ; next_elapse=n/a }",
+            "TimersCalendar={ OnCalendar=daily UTC ; next_elapse=n/a }",
+            "RandomizedDelayUSec=10min",
+        ]))
+        with patch.object(restic_status, "systemd_show", return_value={"available": True, "properties": properties}):
+            timer = restic_status.timer_state("backup.timer", FakeRunner(), 5, NOW)
+        self.assertEqual(timer["intervalsSec"], [86400])
+        self.assertEqual(timer["calendar"], ["weekly UTC", "daily UTC"])
+        self.assertEqual(timer["randomizedDelaySec"], 600)
 
     def test_partial_stats_failure_persists_in_fresh_cache(self):
         report = self.collect(FakeRunner(stats_error=True))

@@ -855,7 +855,10 @@ def parse_properties(output: str) -> dict[str, str]:
     for line in output.splitlines():
         key, separator, value = line.partition("=")
         if separator:
-            result[key] = value
+            if key in {"TimersCalendar", "TimersMonotonic"} and key in result:
+                result[key] += "\n" + value
+            else:
+                result[key] = value
     return result
 
 
@@ -1116,6 +1119,9 @@ def timer_state(
             "NextElapseUSecRealtime",
             "Persistent",
             "WakeSystem",
+            "TimersCalendar",
+            "TimersMonotonic",
+            "RandomizedDelayUSec",
         ],
         runner,
         timeout,
@@ -1145,6 +1151,16 @@ def timer_state(
         "nextRunAt": next_run,
         "persistent": props.get("Persistent", "").lower() == "yes",
         "wakeSystem": wake_system,
+        "calendar": re.findall(r"OnCalendar=(.*?)\s+;\s+next_elapse=", props.get("TimersCalendar", "")),
+        "intervalsSec": [
+            seconds
+            for value in re.findall(
+                r"OnUnit(?:Active|Inactive)USec=(.*?)\s+;",
+                props.get("TimersMonotonic", ""),
+            )
+            if (seconds := systemd_timespan_seconds(value)) is not None
+        ],
+        "randomizedDelaySec": systemd_timespan_seconds(props.get("RandomizedDelayUSec")) or 0,
     }
 
 
@@ -1745,12 +1761,36 @@ def age_hours(value: str | None, now: datetime) -> float | None:
     return max(0.0, (now - parsed).total_seconds() / 3600)
 
 
-def timer_interval_hours(timer: dict[str, Any]) -> float | None:
-    last = parse_iso(timer.get("lastTriggerAt"))
-    upcoming = parse_iso(timer.get("nextRunAt"))
-    if not last or not upcoming or upcoming <= last:
+def timer_interval_hours(
+    timer: dict[str, Any], reference: str | None, runner: Runner, timeout: int
+) -> float | None:
+    last = parse_iso(reference)
+    if not last:
         return None
-    return (upcoming - last).total_seconds() / 3600
+    intervals = list(timer.get("intervalsSec", []))
+    calendar = timer.get("calendar", [])
+    if calendar:
+        command = [
+            "systemd-analyze", "calendar", f"--base-time=@{last.timestamp():.6f}",
+            "--", *calendar,
+        ]
+        try:
+            result = runner.run(command, timeout=timeout, env=dict(os.environ, LC_ALL="C"))
+        except (OSError, subprocess.TimeoutExpired):
+            result = None
+        if result is not None and result.returncode == 0:
+            for timestamp in re.findall(
+                r"^\s*(?:Next elapse|\(in UTC\)):\s+\w+\s+"
+                r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?) UTC\s*$",
+                result.stdout,
+                re.MULTILINE,
+            ):
+                upcoming = parse_iso(timestamp)
+                if upcoming and upcoming > last:
+                    intervals.append((upcoming - last).total_seconds())
+    if not intervals:
+        return None
+    return (min(intervals) + timer.get("randomizedDelaySec", 0)) / 3600
 
 
 def issue(code: str, message: str, severity: str = "warning") -> dict[str, str]:
@@ -1861,7 +1901,7 @@ def evaluate_job(
     last_success = service.get("lastSuccessAt")
     max_age = job["maxRunAgeHours"]
     if not job.get("maxRunAgeExplicit"):
-        interval = timer_interval_hours(timer)
+        interval = timer_interval_hours(timer, last_success or timer.get("lastTriggerAt"), runner, timeout)
         if interval:
             max_age = max(max_age, interval + 12)
     if last_run and last_run.get("result") == "failed":

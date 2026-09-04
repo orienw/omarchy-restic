@@ -29,6 +29,7 @@ The plugin is read-only. It runs only:
 - `systemctl --user show`
 - `systemctl --user list-unit-files`
 - `journalctl --user`
+- `systemd-analyze calendar`
 - `restic snapshots --json`
 - `restic stats --json --mode raw-data`
 
@@ -108,7 +109,7 @@ Job fields:
 | `passwordFile` | Yes | Restic repository password file |
 | `restic` | No | Executable name or path, defaults to `restic` |
 | `tag` | No | Restricts snapshots and stats to one restic tag |
-| `maxRunAgeHours` | No | Successful-run deadline. Defaults to 36 hours or the observed timer interval plus 12 hours, whichever is larger |
+| `maxRunAgeHours` | No | Successful-run deadline. Defaults to 36 hours or the configured timer interval plus its random delay and 12 hours, whichever is larger. Calendar deadlines follow the next scheduled occurrence after the last successful run or trigger. If the schedule cannot be evaluated, the default is 36 hours |
 | `checkService` | No | Existing user service that runs `restic check` |
 | `checkTimer` | No | Timer for the integrity-check service |
 | `checkMaxAgeHours` | No | Integrity-check deadline, defaults to 720 hours |
