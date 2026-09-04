@@ -1071,6 +1071,7 @@ def service_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
             "ExecMainStatus",
             "ExecMainStartTimestamp",
             "ExecMainExitTimestamp",
+            "StateChangeTimestamp",
         ],
         runner,
         timeout,
@@ -1100,6 +1101,7 @@ def service_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
         "exitStatus": exit_status,
         "startedAt": iso_from_systemd_timestamp(props.get("ExecMainStartTimestamp")),
         "finishedAt": iso_from_systemd_timestamp(props.get("ExecMainExitTimestamp")),
+        "stateChangedAt": iso_from_systemd_timestamp(props.get("StateChangeTimestamp")),
         "active": active_state in {"active", "activating", "reloading"},
     }
 
@@ -1261,14 +1263,23 @@ def journal_history(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
 
 
 def fallback_run_from_systemd(state: dict[str, Any]) -> dict[str, Any] | None:
-    if not state.get("finishedAt"):
+    if not state.get("available") or state.get("active"):
         return None
-    successful = state.get("result") in {"", "success"} and state.get("exitStatus", 0) == 0
+    successful = (
+        state.get("activeState") != "failed"
+        and state.get("result") in {"", "success"}
+        and state.get("exitStatus", 0) == 0
+    )
+    finished = state.get("finishedAt")
+    if not successful:
+        finished = max(finished or "", state.get("stateChangedAt") or "") or None
+    if not finished and successful:
+        return None
     return {
         "invocationId": "",
         "startedAt": state.get("startedAt"),
-        "finishedAt": state.get("finishedAt"),
-        "durationSec": elapsed_seconds(state.get("startedAt"), state.get("finishedAt")),
+        "finishedAt": finished,
+        "durationSec": elapsed_seconds(state.get("startedAt"), finished),
         "result": "success" if successful else "failed",
         "message": "Completed successfully" if successful else f"Service result: {state.get('result') or 'failed'}",
     }
@@ -1277,10 +1288,18 @@ def fallback_run_from_systemd(state: dict[str, Any]) -> dict[str, Any] | None:
 def collect_unit(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
     state = service_state(unit, runner, timeout)
     history = journal_history(unit, runner, timeout)
-    last_run = history.get("lastRun") or fallback_run_from_systemd(state)
+    systemd_run = fallback_run_from_systemd(state)
+    runs = [run for run in (history.get("lastRun"), systemd_run) if run]
+    last_run = max(
+        runs,
+        key=lambda run: (run.get("finishedAt") or "", run.get("result") == "failed"),
+        default=None,
+    )
+    if systemd_run and not systemd_run.get("finishedAt"):
+        last_run = systemd_run
     last_success = history.get("lastSuccessAt")
-    if not last_success and last_run and last_run.get("result") == "success":
-        last_success = last_run.get("finishedAt")
+    if last_run and last_run.get("result") == "success":
+        last_success = max(last_success or "", last_run.get("finishedAt") or "") or None
     state.update(
         {
             "historyAvailable": history.get("available", False),

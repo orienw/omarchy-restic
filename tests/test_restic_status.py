@@ -735,6 +735,43 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(history["lastRun"]["message"], "Backup deactivated")
         self.assertEqual(history["lastRun"]["durationSec"], 180)
 
+    def test_newer_systemd_failure_overrides_older_journal_success(self):
+        state = restic_status.service_state("restic-home.service", FakeRunner(failed=True), 30)
+        state.update({"activeState": "failed", "finishedAt": restic_status.isoformat(NOW - timedelta(minutes=1))})
+        with patch.object(restic_status, "service_state", return_value=state):
+            job = self.collect(FakeRunner())["jobs"][0]
+        self.assertEqual(job["status"], "attention")
+        self.assertEqual(job["service"]["lastRun"]["result"], "failed")
+        self.assertEqual(job["service"]["lastRun"]["finishedAt"], state["finishedAt"])
+        self.assertTrue(job["logTail"])
+
+    def test_newer_systemd_success_overrides_older_journal_failure(self):
+        state = restic_status.service_state("restic-home.service", FakeRunner(), 30)
+        state["finishedAt"] = restic_status.isoformat(NOW - timedelta(minutes=1))
+        with patch.object(restic_status, "service_state", return_value=state):
+            job = self.collect(FakeRunner(failed=True))["jobs"][0]
+        self.assertEqual(job["status"], "healthy")
+        self.assertEqual(job["service"]["lastSuccessAt"], state["finishedAt"])
+
+    def test_failure_without_a_new_main_exit_uses_unit_state_change(self):
+        for finished in (None, restic_status.isoformat(NOW - timedelta(hours=2))):
+            with self.subTest(finished=finished):
+                state = restic_status.service_state("restic-home.service", FakeRunner(failed=True), 30)
+                state.update({
+                    "activeState": "failed", "finishedAt": finished,
+                    "stateChangedAt": restic_status.isoformat(NOW - timedelta(minutes=1)),
+                })
+                with patch.object(restic_status, "service_state", return_value=state):
+                    job = self.collect(FakeRunner())["jobs"][0]
+                self.assertEqual(job["status"], "attention")
+                self.assertEqual(job["service"]["lastRun"]["finishedAt"], state["stateChangedAt"])
+
+    def test_systemd_failure_wins_a_timestamp_tie(self):
+        state = restic_status.service_state("restic-home.service", FakeRunner(failed=True), 30)
+        with patch.object(restic_status, "service_state", return_value=state):
+            job = self.collect(FakeRunner())["jobs"][0]
+        self.assertEqual(job["status"], "attention")
+
     def test_failed_refresh_keeps_cached_repository_data(self):
         self.collect(FakeRunner())
         report = self.collect(FakeRunner(restic_error=1), force=True)
