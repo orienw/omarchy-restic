@@ -848,6 +848,26 @@ class ResticStatusTest(unittest.TestCase):
         self.collect(forced, force=True, now=NOW + timedelta(minutes=21))
         self.assertTrue(any("snapshots" in command for command, _ in forced.calls))
 
+    def test_cached_lock_failures_back_off_and_allow_forced_recovery(self):
+        for force in (False, True):
+            with self.subTest(force=force):
+                original = self.collect(FakeRunner(), force=True)["jobs"][0]["repository"]
+                busy = self.collect(FakeRunner(restic_error=11), now=NOW + timedelta(minutes=16))
+                repository = busy["jobs"][0]["repository"]
+                self.assertEqual(repository["status"], "busy")
+                self.assertEqual(repository["latestSnapshot"], original["latestSnapshot"])
+                self.assertEqual(repository["checkedAt"], original["checkedAt"])
+
+                backed_off = FakeRunner()
+                cached = self.collect(backed_off, now=NOW + timedelta(minutes=17))
+                self.assertEqual(cached["jobs"][0]["repository"]["status"], "busy")
+                self.assertFalse(any("snapshots" in command or "stats" in command for command, _ in backed_off.calls))
+
+                recovered = FakeRunner()
+                report = self.collect(recovered, force=force, now=NOW + timedelta(minutes=18 if force else 32))
+                self.assertEqual(report["jobs"][0]["repository"]["status"], "ready")
+                self.assertTrue(any("snapshots" in command for command, _ in recovered.calls))
+
     def test_missing_run_history_uses_timer_trigger_as_deadline(self):
         overdue = self.collect(FakeRunner(no_history=True, last_trigger_age_hours=100))
         self.assertEqual(overdue["jobs"][0]["status"], "attention")

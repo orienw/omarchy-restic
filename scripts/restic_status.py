@@ -1703,7 +1703,7 @@ def collect_repository(
         message = sanitize(snapshots_result.stderr or snapshots_result.stdout or "Restic snapshot query failed")
         if cached:
             if status == "busy":
-                return repository_from_cache(cached, "deferred", "cache", message)
+                return repository_cache_failure(path, cached, "busy", message, now)
             return repository_cache_failure(path, cached, "stale", message, now)
         return repository_uncached_failure(path, key, status, message, now)
 
