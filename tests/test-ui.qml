@@ -43,6 +43,21 @@ ShellRoot {
     return null
   }
 
+  function literalTextCount(parent) {
+    if (!parent) return 0
+    var count = 0
+    if (typeof parent.text === "string" && parent.text.indexOf("_LITERAL") !== -1) {
+      if (parent.textFormat !== Text.PlainText) {
+        root.fail("external text was interpreted as markup")
+        return -100
+      }
+      count++
+    }
+    for (var i = 0; parent.children && i < parent.children.length; i++)
+      count += literalTextCount(parent.children[i])
+    return count
+  }
+
   TestEvent {
     id: events
   }
@@ -88,14 +103,14 @@ ShellRoot {
       },
       {
         id: "dropbox",
-        name: "Dropbox",
+        name: "<b>NAME_LITERAL</b>",
         status: "attention",
-        statusText: "Last run failed",
+        statusText: "Last run failed <i>STATUS_LITERAL</i>",
         service: { lastRun: { finishedAt: "2026-08-17T10:55:00Z", durationSec: 4, result: "failed" } },
         timer: { nextRunAt: "2026-08-18T03:50:00Z" },
         repository: { status: "stale", checkedAt: "2026-08-17T10:00:00Z", snapshotCount: 2, latestSnapshot: null, stats: {} },
         integrity: { status: "not-configured", lastSuccessAt: null },
-        logTail: ["repository unavailable"]
+        logTail: ["Backup log <b>LOG_LITERAL</b>"]
       }
     ]
 
@@ -220,6 +235,10 @@ ShellRoot {
         }
         if (!dropboxCard || !dropboxCard.detailsExpanded) {
           root.fail("attention job details should start open")
+          return
+        }
+        if (root.literalTextCount(dropboxCard) !== 3) {
+          root.fail("job names, status messages, and logs were not all rendered literally")
           return
         }
         var homeToggle = root.findByName(homeCard, "jobDetailsToggle-home")

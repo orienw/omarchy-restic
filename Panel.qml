@@ -115,6 +115,7 @@ Panel {
             iconOpacity: root.status === "unknown" ? 0.55 : 1
             iconComponent: Component {
               Text {
+                textFormat: Text.PlainText
                 text: Model.statusGlyph(root.status)
                 color: root.status === "attention" ? root.urgent : root.foreground
                 font.family: root.fontFamily
@@ -124,6 +125,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             visible: root.resticService && root.resticService.lastError !== ""
             width: parent.width
             text: root.resticService ? root.resticService.lastError : ""
@@ -142,6 +144,7 @@ Panel {
             radius: Style.cornerRadius
 
             Text {
+              textFormat: Text.PlainText
               id: configErrorText
               anchors.fill: parent
               anchors.margins: Style.space(10)
@@ -188,6 +191,7 @@ Panel {
                   spacing: Style.space(8)
 
                   Text {
+                    textFormat: Text.PlainText
                     text: String(jobCard.job.name || jobCard.job.id || "Restic job")
                     color: root.foreground
                     font.family: root.fontFamily
@@ -201,6 +205,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     id: statusText
                     text: Model.statusGlyph(jobCard.job.status) + "  " + String(jobCard.job.status || "unknown").toUpperCase()
                     color: jobCard.job.status === "attention" ? root.urgent : root.dim
@@ -211,6 +216,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   width: parent.width
                   text: String(jobCard.job.statusText || "Status unknown")
                   color: jobCard.job.status === "attention" ? root.urgent : root.dim
@@ -224,6 +230,7 @@ Panel {
                 InfoPair { label: "Latest snapshot"; value: Model.latestSnapshot(jobCard.job, root.nowMs) }
 
                 Text {
+                  textFormat: Text.PlainText
                   visible: jobCard.job.logTail && jobCard.job.logTail.length > 0
                   width: parent.width
                   text: jobCard.job.logTail ? jobCard.job.logTail.join("\n") : ""
@@ -248,6 +255,7 @@ Panel {
                   spacing: Style.space(7)
 
                   Text {
+                    textFormat: Text.PlainText
                     visible: text !== ""
                     width: parent.width
                     text: Model.snapshotSummary(jobCard.job)
@@ -267,6 +275,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             visible: root.jobs.length === 0 && !(root.resticService && root.resticService.configError !== "")
             width: parent.width
             text: "No Restic backup timers were discovered"
@@ -294,6 +303,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             text: root.resticService && root.resticService.generatedAt
               ? "Status updated " + Model.relativeTime(root.resticService.generatedAt, root.nowMs).toLowerCase()
@@ -331,6 +341,7 @@ Panel {
       spacing: Style.space(8)
 
       Text {
+        textFormat: Text.PlainText
         id: detailsLabel
         text: "Details"
         color: detailsHandler.containsMouse ? root.foreground : root.dim
@@ -344,6 +355,7 @@ Panel {
       }
 
       Text {
+        textFormat: Text.PlainText
         id: detailsChevron
         text: "󰅀"
         color: detailsHandler.containsMouse ? root.foreground : root.dim
@@ -371,6 +383,7 @@ Panel {
     spacing: Style.space(8)
 
     Text {
+      textFormat: Text.PlainText
       id: infoLabel
       text: parent.label
       color: root.dim
@@ -384,6 +397,7 @@ Panel {
     }
 
     Text {
+      textFormat: Text.PlainText
       id: infoValue
       width: Math.min(
         implicitWidth,
