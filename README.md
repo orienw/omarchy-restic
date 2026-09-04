@@ -65,7 +65,7 @@ The plugin discovers restic jobs automatically. It lists user systemd timers, re
 
 Discovery never sources or executes a backup script. Direct restic commands and static shell assignments are supported. Dynamic command construction, repository URLs without repository files, and unusual credential loading need an override.
 
-Discovered job identifiers come from the service unit name, so changing a unit description only changes the label. The last good discovery is cached. If timer discovery later fails, the existing cards remain visible while the panel reports that verification is degraded. If a single service cannot be inspected, its cached definition is reused the same way.
+Discovered job identifiers come from the service unit name, so changing a unit description only changes the label. The last good discovery is cached. If timer discovery later fails, the existing cards remain visible while the panel reports that verification is degraded. If a single service or its wrapper script cannot be inspected, its cached definition is reused the same way.
 
 ## Optional job overrides
 

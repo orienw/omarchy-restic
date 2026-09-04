@@ -589,6 +589,25 @@ class ResticStatusTest(unittest.TestCase):
                     expected,
                 )
 
+    def test_missing_or_unreadable_wrapper_retains_cached_job(self):
+        for broken in ("missing", "invalid-encoding"):
+            with self.subTest(broken=broken):
+                script = self.discovery_script()
+                before = self.collect(DiscoveryRunner(script))
+                if broken == "missing":
+                    script.unlink()
+                else:
+                    script.write_bytes(b"#!/bin/sh\n\xff")
+                report = self.collect(DiscoveryRunner(script))
+                self.assertEqual([job["id"] for job in report["jobs"]], [job["id"] for job in before["jobs"]])
+                self.assertEqual(report["overallStatus"], "unknown")
+                self.assertEqual(report["config"]["status"], "degraded")
+                self.assertIn("restic-documents.service", report["config"]["error"])
+                self.assertEqual(report["jobs"][1]["source"], "systemd-cache")
+                recovered = self.collect(DiscoveryRunner(self.discovery_script()))
+                self.assertEqual(recovered["overallStatus"], "healthy")
+                self.assertEqual(recovered["jobs"][1]["source"], "systemd")
+
     def test_wrapper_inspection_does_not_read_restic_option_paths(self):
         argv = " ".join(
             (

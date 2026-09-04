@@ -622,9 +622,12 @@ def read_wrapper_script(path: Path) -> str:
         with path.open("rb") as candidate:
             if candidate.read(2) != b"#!":
                 return ""
-    except OSError:
-        return ""
-    return read_static_text(path)
+    except OSError as error:
+        raise DiscoveryError(f"Could not inspect executable {path}: {sanitize(error)}") from error
+    text = read_static_text(path)
+    if not text:
+        raise DiscoveryError(f"Could not read wrapper script {path}")
+    return text
 
 
 def wrapper_text(exec_path: str, argv: str) -> str:
