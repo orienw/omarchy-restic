@@ -110,6 +110,13 @@ ShellRoot {
         root.fail("integrity failures should start expanded")
         return
       }
+      if (Model.integrityState({integrity: {
+        status: "unknown", statusText: "Integrity-check service status is unavailable",
+        lastSuccessAt: "2026-08-17T11:00:00Z"
+      }}, nowMs) !== "Integrity-check service status is unavailable") {
+        root.fail("unverifiable integrity status must not display a past check as passed")
+        return
+      }
       if (Model.reportMeta(null, true) !== "Refreshing status") {
         root.fail("null report while refreshing should say refreshing")
         return

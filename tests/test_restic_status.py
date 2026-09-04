@@ -998,6 +998,27 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(integrity["status"], "healthy")
         self.assertEqual(integrity["statusText"], "Last integrity check passed")
 
+    def test_unavailable_integrity_service_cannot_reuse_a_healthy_verdict(self):
+        class UnavailableCheck(FakeRunner):
+            def _systemctl(self, command, unit):
+                if unit == "restic-home-check.service":
+                    return subprocess.CompletedProcess(command, 1, "", "Cannot inspect check service")
+                return super()._systemctl(command, unit)
+
+        for timer in (None, "restic-home-check.timer"):
+            with self.subTest(timer=timer):
+                config = json.loads(self.config.read_text())
+                config["jobs"][0].update({"checkService": "restic-home-check.service", "checkTimer": timer})
+                self.config.write_text(json.dumps(config))
+                self.assertEqual(self.collect(FakeRunner())["overallStatus"], "healthy")
+                report = self.collect(UnavailableCheck())
+                integrity = report["jobs"][0]["integrity"]
+                self.assertEqual(report["overallStatus"], "unknown")
+                self.assertEqual(integrity["status"], "unknown")
+                self.assertTrue(integrity["lastSuccessAt"])
+                self.assertEqual(integrity["statusText"], "Integrity-check service status is unavailable")
+                self.assertEqual(self.collect(FakeRunner())["overallStatus"], "healthy")
+
     def test_invalid_config_returns_an_unknown_report(self):
         self.config.write_text('{"schemaVersion":1,"jobs":[]}', encoding="utf-8")
         report = self.collect(FakeRunner())

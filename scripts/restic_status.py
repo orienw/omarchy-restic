@@ -1834,7 +1834,10 @@ def evaluate_integrity(
     )
     last_run = service.get("lastRun")
     last_success = service.get("lastSuccessAt")
-    if service.get("active"):
+    if not service.get("available"):
+        status = "unknown"
+        status_text = "Integrity-check service status is unavailable"
+    elif service.get("active"):
         status = "running"
         status_text = "Integrity check in progress"
     elif service.get("available") and service.get("loadState") != "loaded":

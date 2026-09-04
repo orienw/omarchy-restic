@@ -148,6 +148,7 @@ function integrityState(job, nowMs) {
   var integrity = job && job.integrity ? job.integrity : null
   if (!integrity || integrity.status === "not-configured") return "Not configured"
   if (integrity.status === "running") return "Check in progress"
+  if (integrity.status === "unknown") return String(integrity.statusText || "Check status unavailable")
   if (integrity.status === "attention") return String(integrity.statusText || "Needs attention")
   if (!integrity.lastSuccessAt) return String(integrity.statusText || "No completed check")
   return "Passed " + relativeTime(integrity.lastSuccessAt, nowMs).toLowerCase()
