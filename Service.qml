@@ -11,15 +11,13 @@ Item {
   readonly property string pluginId: manifest && manifest.id
     ? String(manifest.id)
     : "io.github.orienw.restic"
-  readonly property string sourceDir: manifest && manifest.__sourceDir
-    ? String(manifest.__sourceDir)
-    : ""
   readonly property var settings: findSettings()
   readonly property string jobsFile: String(setting("jobsFile", "~/.config/omarchy-restic/jobs.json"))
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 60, 15, 3600)
   readonly property int repositoryRefreshMinutes: intSetting("repositoryRefreshMinutes", 15, 1, 1440)
   readonly property int logLines: intSetting("logLines", 12, 1, 100)
-  readonly property string helperPath: sourceDir + "/scripts/restic_status.py"
+  readonly property string helperPath: decodeURIComponent(
+    String(Qt.resolvedUrl("scripts/restic_status.py")).replace(/^file:\/\//, ""))
 
   property bool initialized: false
   property bool refreshing: false
@@ -56,7 +54,8 @@ Item {
 
   function findSettings() {
     var config = shell && shell.shellConfig ? shell.shellConfig : null
-    var layout = config && config.bar && config.bar.layout ? config.bar.layout : null
+    var barConfig = shell && shell.barConfig ? shell.barConfig : config && config.bar
+    var layout = barConfig && barConfig.layout ? barConfig.layout : null
     var sections = ["left", "center", "right"]
     for (var s = 0; s < sections.length; s++) {
       var widgets = layout && Array.isArray(layout[sections[s]]) ? layout[sections[s]] : []
@@ -84,13 +83,13 @@ Item {
   }
 
   function initialize() {
-    if (initialized || !shell || sourceDir === "") return
+    if (initialized || !shell || !manifest) return
     initialized = true
     refresh(false)
   }
 
   function refresh(forceRepositories) {
-    if (!initialized || helperPath === "/scripts/restic_status.py") return "not ready"
+    if (!initialized) return "not ready"
     if (collector.running) {
       if (forceRepositories === true) forcePending = true
       return "busy"
