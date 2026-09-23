@@ -52,8 +52,8 @@ ShellRoot {
         root.fail("the snapshot browser failed to load")
         return
       }
-      // Stage 72 races the first listing on purpose, so it runs while loading.
-      if (!browser || (browser.loading && root.stage !== 72)) return
+      // Stages 72 and 74 race the first listing on purpose, so they run while loading.
+      if (!browser || (browser.loading && root.stage !== 72 && root.stage !== 74)) return
 
       if (root.stage === 0) {
         if (browser.path !== "/home/test" || browser.entries.length !== 4) return
@@ -236,6 +236,34 @@ ShellRoot {
         if (browser.path !== "/home/test/Swap" || browser.selectedName !== ""
             || browser.restoreTarget !== null || browser.folderRestorable) {
           root.fail("switching during the first listing still redirected to the parent: "
+            + browser.path + " " + browser.selectedName)
+          return
+        }
+        browser.open({ id: "linkroot", name: "Link root" })
+        root.stage = 74
+        return
+      }
+
+      if (root.stage === 74) {
+        if (browser.snapshots.length === 0) return
+        browser.switchSnapshot(1)
+        root.stage = 75
+        return
+      }
+
+      if (root.stage === 75) {
+        if (!browser.listingReady) return
+        browser.moveSelection(1)
+        browser.switchSnapshot(-1)
+        root.stage = 76
+        return
+      }
+
+      if (root.stage === 76) {
+        if (!browser.listingReady) return
+        if (browser.path !== "/home/test/Swap" || browser.selectedName !== "inside.txt"
+            || browser.restoreTarget !== null || browser.folderRestorable) {
+          root.fail("switching back to the newest snapshot redirected the selection: "
             + browser.path + " " + browser.selectedName)
           return
         }

@@ -35,8 +35,8 @@ Item {
   property int session: 0
   property string shownKey: ""
   // The one listing allowed to redirect a single-file snapshot to its folder:
-  // the newest snapshot's root. A listing for any other snapshot or path,
-  // including one that arrives after a quick switch, never redirects.
+  // the newest snapshot's root, until the user goes anywhere else. After that,
+  // not even a return to the same listing redirects.
   property string openingKey: ""
 
   property var _active: null
@@ -145,8 +145,8 @@ Item {
     // A snapshot of a single file starts at the file: open its folder instead.
     // Only when opening; elsewhere a path that is not a folder is simply not
     // in this snapshot, and the selection stays as it was.
-    var opening = openingKey !== "" && openingKey === listingKey(path)
-    if (opening) openingKey = ""
+    var opening = openingKey !== ""
+    openingKey = ""
     if (opening && listing.kind && listing.kind !== "dir" && listing.kind !== "missing") {
       navigate(Model.parentPath(path), Model.baseName(path))
       return
@@ -167,6 +167,7 @@ Item {
 
   function navigate(target, selectName) {
     if (!snapshot) return
+    if (listingKey(target) !== openingKey) openingKey = ""
     if (target !== path || selectName !== undefined) selectedName = selectName || ""
     path = target
     var cached = listings[listingKey(target)]
