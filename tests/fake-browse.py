@@ -9,14 +9,17 @@ if command == "snapshots":
         {"id": "a" * 64, "shortId": "aaaaaaaa", "time": "2026-08-16T03:30:00Z", "paths": ["/home/test"]},
     ]}))
 elif options["--path"] == "/home/test":
-    print(json.dumps({"type": "entries", "path": "/home/test", "truncated": False, "entries": [
+    print(json.dumps({"type": "entries", "path": "/home/test", "truncated": False, "exists": True, "entries": [
         {"name": "Documents", "type": "dir", "path": "/home/test/Documents", "size": None},
         {"name": "Pictures", "type": "dir", "path": "/home/test/Pictures", "size": None},
         {"name": "<b>ENTRY_LITERAL</b>.txt", "type": "file", "path": "/home/test/<b>ENTRY_LITERAL</b>.txt", "size": 42},
     ]}))
 elif options["--path"] == "/home/test/Pictures" and options["--snapshot"] == "a" * 64:
     print(json.dumps({"type": "error", "error": "path /home/test/Pictures: not found"}))
+elif options["--path"] in ("/home/test/Empty", "/home/test/Gone"):
+    print(json.dumps({"type": "entries", "path": options["--path"], "truncated": False, "entries": [],
+                      "exists": options["--path"] == "/home/test/Empty"}))
 else:
-    print(json.dumps({"type": "entries", "path": options["--path"], "truncated": False, "entries": [
+    print(json.dumps({"type": "entries", "path": options["--path"], "truncated": False, "exists": True, "entries": [
         {"name": "notes.md", "type": "file", "path": options["--path"] + "/notes.md", "size": 1024},
     ]}))

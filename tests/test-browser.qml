@@ -22,6 +22,7 @@ ShellRoot {
     property string restoreState: ""
     property string restoreName: ""
     property real restorePercent: -1
+    property string restoreError: ""
     property var restoreCalls: []
 
     function restoreEntry(jobId, snapshot, entry) {
@@ -92,6 +93,58 @@ ShellRoot {
           root.fail("the file was not restored from the older snapshot")
           return
         }
+        browser.switchSnapshot(-1)
+        var keep = {}
+        keep[browser.listingKey(browser.path)] = browser.listings[browser.listingKey(browser.path)]
+        browser.listings = keep
+        browser.switchSnapshot(1)
+        browser.switchSnapshot(-1)
+        browser.restoreSelected()
+        browser.restoreFolder()
+        if (JSON.stringify(fakeService.restoreCalls.slice(1)) !== JSON.stringify([
+            ["bbbbbbbb", "/home/test/Documents/notes.md", "file"],
+            ["bbbbbbbb", "/home/test/Documents", "dir"]])) {
+          root.fail("a quick switch back widened the file restore or mixed it with the folder: "
+            + JSON.stringify(fakeService.restoreCalls))
+          return
+        }
+        root.stage = 21
+        return
+      }
+
+      if (root.stage === 21) {
+        if (!browser.selectedEntry || browser.selectedEntry.name !== "notes.md") {
+          root.fail("a late older listing disturbed the selection")
+          return
+        }
+        browser.navigate("/home/test/Empty", "")
+        root.stage = 22
+        return
+      }
+
+      if (root.stage === 22) {
+        if (!browser.listingReady || !browser.folderRestorable) {
+          root.fail("an existing empty folder could not be restored")
+          return
+        }
+        browser.navigate("/home/test/Gone", "")
+        root.stage = 23
+        return
+      }
+
+      if (root.stage === 23) {
+        if (!browser.listingReady || browser.folderRestorable) {
+          root.fail("a folder missing from the snapshot was offered for restore")
+          return
+        }
+        fakeService.restoreCalls = fakeService.restoreCalls.slice(0, 1)
+        browser.switchSnapshot(1)
+        browser.navigate("/home/test/Documents", "")
+        root.stage = 24
+        return
+      }
+
+      if (root.stage === 24) {
         browser.switchSnapshot(-1)
         browser.navigate("/home/test/Pictures", "")
         root.stage = 3

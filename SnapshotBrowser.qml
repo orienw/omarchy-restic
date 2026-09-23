@@ -23,7 +23,11 @@ Item {
   property int snapshotIndex: 0
   property string path: "/"
   property var entries: []
+  property bool folderExists: false
   property int selectedIndex: -1
+  // What the user picked, by name, independent of the listing on screen, so
+  // switching snapshots can neither lose it nor widen it to the folder.
+  property string selectedName: ""
   property bool truncated: false
   property bool loading: false
   property string error: ""
@@ -43,12 +47,12 @@ Item {
   readonly property var selectedEntry: selectedIndex >= 0 && selectedIndex < entries.length
     ? entries[selectedIndex]
     : null
-  // Restore only what the visible listing proves exists in this snapshot.
+  // Restore only what the listing on screen proves exists in this snapshot.
   readonly property bool listingReady: !!snapshot && shownKey === listingKey(path)
-  readonly property var candidate: !listingReady ? null
-    : selectedEntry ? selectedEntry
-    : (path !== "/" && entries.length > 0 ? { name: Model.baseName(path), path: path, type: "dir" } : null)
-  readonly property var restoreTarget: candidate && Model.exactPath(candidate.path) ? candidate : null
+  readonly property var restoreTarget: listingReady && selectedEntry && Model.exactPath(selectedEntry.path)
+    ? selectedEntry
+    : null
+  readonly property bool folderRestorable: listingReady && folderExists && path !== "/" && Model.exactPath(path)
   readonly property bool restoring: !!service && service.restoreState === "running"
 
   signal closeRequested()
@@ -122,7 +126,7 @@ Item {
       if (snapshot) navigate(Model.browseRoot(snapshot), "")
     } else {
       listings[item.key] = result
-      if (current) show(result, item.select)
+      if (current) show(result)
     }
   }
 
@@ -130,14 +134,15 @@ Item {
     return (snapshot ? snapshot.id : "") + "\n" + target
   }
 
-  function show(listing, selectName) {
+  function show(listing) {
     error = ""
     shownKey = listingKey(path)
     entries = Array.isArray(listing.entries) ? listing.entries : []
+    folderExists = listing.exists === true
     truncated = listing.truncated === true
     selectedIndex = -1
-    for (var i = 0; selectName && i < entries.length; i++) {
-      if (entries[i].name === selectName) {
+    for (var i = 0; selectedName && i < entries.length; i++) {
+      if (entries[i].name === selectedName) {
         selectedIndex = i
         break
       }
@@ -146,30 +151,36 @@ Item {
 
   function navigate(target, selectName) {
     if (!snapshot) return
+    if (target !== path || selectName !== undefined) selectedName = selectName || ""
     path = target
     var cached = listings[listingKey(target)]
     if (cached) {
-      show(cached, selectName)
+      show(cached)
       return
     }
     error = ""
     shownKey = ""
     entries = []
+    folderExists = false
     selectedIndex = -1
     truncated = false
     request({
       kind: "ls",
       key: listingKey(target),
-      select: selectName,
       args: ["ls", "--snapshot=" + snapshot.id, "--path=" + target]
     })
   }
 
+  function select(index) {
+    selectedIndex = index
+    selectedName = entries[index].name
+  }
+
   function moveSelection(delta) {
     if (entries.length === 0) return
-    selectedIndex = selectedIndex < 0
+    select(selectedIndex < 0
       ? (delta > 0 ? 0 : entries.length - 1)
-      : Math.max(0, Math.min(entries.length - 1, selectedIndex + delta))
+      : Math.max(0, Math.min(entries.length - 1, selectedIndex + delta)))
   }
 
   function openSelected() {
@@ -184,14 +195,18 @@ Item {
   function switchSnapshot(delta) {
     var next = snapshotIndex + delta
     if (next < 0 || next >= snapshots.length) return
-    var keep = selectedEntry ? selectedEntry.name : ""
     snapshotIndex = next
-    navigate(path, keep)
+    navigate(path)
   }
 
   function restoreSelected() {
-    if (service && snapshot && restoreTarget && !restoring)
+    if (service && restoreTarget && !restoring)
       service.restoreEntry(job.id, snapshot, restoreTarget)
+  }
+
+  function restoreFolder() {
+    if (service && folderRestorable && !restoring)
+      service.restoreEntry(job.id, snapshot, { name: Model.baseName(path), path: path, type: "dir" })
   }
 
   function restoreLabel() {
@@ -199,14 +214,18 @@ Item {
       var percent = service.restorePercent >= 0 ? " " + Math.round(service.restorePercent * 100) + "%" : ""
       return "Restoring " + service.restoreName + "..." + percent
     }
-    if (candidate && !restoreTarget) return "Restore the folder that contains it"
-    return restoreTarget && selectedEntry ? "Restore " + restoreTarget.name : "Restore this folder"
+    if (!selectedName) return "Restore"
+    if (!listingReady) return "Restore " + selectedName
+    if (!selectedEntry) return selectedName + " is not in this snapshot"
+    if (!restoreTarget) return "Restore the folder that contains it"
+    return "Restore " + selectedName
   }
 
   function handleText(text) {
     if (text === "[") switchSnapshot(1)
     else if (text === "]") switchSnapshot(-1)
     else if (text === "r" || text === "R") restoreSelected()
+    else if (text === "f" || text === "F") restoreFolder()
     else if (text === "\b") goUp()
   }
 
@@ -368,7 +387,7 @@ Item {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
             onClicked: {
-              root.selectedIndex = row.index
+              root.select(row.index)
               root.openSelected()
             }
           }
@@ -382,7 +401,8 @@ Item {
         width: parent.width - Style.space(20)
         text: root.error !== "" ? root.error
           : root.snapshot && !root.listingReady ? "Loading..."
-          : root.listingReady && root.entries.length === 0 ? "Nothing here in this snapshot"
+          : root.listingReady && !root.folderExists ? "This folder is not in this snapshot"
+          : root.listingReady && root.entries.length === 0 ? "This folder is empty"
           : ""
         color: root.error !== "" ? root.urgent : root.dim
         font.family: root.fontFamily
@@ -413,16 +433,31 @@ Item {
       Button {
         id: restoreButton
         objectName: "restoreButton"
-        width: parent.width - (cancelButton.visible ? cancelButton.width + parent.spacing : 0)
+        width: parent.width - folderButton.width - parent.spacing
+          - (cancelButton.visible ? cancelButton.width + parent.spacing : 0)
         text: root.restoreLabel()
         iconText: "󰦛"
         iconSpinning: root.restoring
         foreground: root.foreground
         fontFamily: root.fontFamily
         bordered: true
-        enabled: !root.restoring && !!root.snapshot && !!root.restoreTarget
+        enabled: !root.restoring && !!root.restoreTarget
         opacity: enabled || root.restoring ? 1 : 0.5
         onClicked: root.restoreSelected()
+      }
+
+      Button {
+        id: folderButton
+        objectName: "restoreFolderButton"
+        visible: !root.restoring
+        width: visible ? implicitWidth : 0
+        text: "Restore folder"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        bordered: true
+        enabled: root.folderRestorable
+        opacity: enabled ? 1 : 0.5
+        onClicked: root.restoreFolder()
       }
 
       Button {
@@ -472,7 +507,7 @@ Item {
     Text {
       textFormat: Text.PlainText
       width: parent.width
-      text: "Enter open · ⌫ up · [ ] snapshot · R restore · Esc back"
+      text: "Enter open · ⌫ up · [ ] snapshot · R restore · F folder · Esc back"
       color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption

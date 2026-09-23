@@ -192,11 +192,25 @@ class ResticBrowseTest(unittest.TestCase):
             node("/home/test/beta.txt"),
         ]))
 
-        entries, truncated = restic_browse.list_directory(["restic"], SNAPSHOT, "/home/test", runner, 30)
+        entries, truncated, exists = restic_browse.list_directory(["restic"], SNAPSHOT, "/home/test", runner, 30)
 
         self.assertEqual([entry["name"] for entry in entries], ["Alpha", "beta.txt", "zeta.txt"])
         self.assertFalse(truncated)
+        self.assertTrue(exists)
         self.assertEqual(runner.calls[0][-3:], ["ls", SNAPSHOT, "/home/test"])
+
+    def test_directory_listing_tells_an_empty_folder_from_a_missing_one(self):
+        snapshot_line = json.dumps({"struct_type": "snapshot", "id": SNAPSHOT})
+        empty = ListRunner("\n".join([snapshot_line, node("/home/test/Empty", "dir", None)]))
+        missing = ListRunner(snapshot_line)
+
+        self.assertEqual(
+            restic_browse.list_directory(["restic"], SNAPSHOT, "/home/test/Empty", empty, 30), ([], False, True)
+        )
+        self.assertEqual(
+            restic_browse.list_directory(["restic"], SNAPSHOT, "/home/test/Gone", missing, 30), ([], False, False)
+        )
+        self.assertTrue(restic_browse.list_directory(["restic"], SNAPSHOT, "/", missing, 30)[2])
 
     def test_snapshots_are_newest_first_and_filtered_by_tag(self):
         runner = ListRunner(json.dumps([
