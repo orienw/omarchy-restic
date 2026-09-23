@@ -4,7 +4,7 @@ An Omarchy shell plugin for the restic backups you already run. It finds your ex
 
 Other restic plugins set up backups for you. This one adopts the setup you already have: no migration, no second config, no new timers.
 
-![Restic status panel with sample data](preview.png)
+![Restic job panel and snapshot browser open from the Omarchy bar, with sample data](preview.png)
 
 ## What it does
 

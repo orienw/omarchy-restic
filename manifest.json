@@ -5,7 +5,7 @@
   "version": "0.2.2",
   "author": "Orien",
   "license": "MIT",
-  "description": "Monitors, runs, and restores the restic backups you already have, from the Omarchy bar.",
+  "description": "Health, one-click backups, and file restore for the restic jobs you already run, right in the Omarchy bar.",
   "kinds": [
     "service",
     "bar-widget"
