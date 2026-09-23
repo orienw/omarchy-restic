@@ -452,6 +452,7 @@ Item {
         visible: !root.restoring
         width: visible ? implicitWidth : 0
         text: "Restore folder"
+        iconText: "󰉋"
         foreground: root.foreground
         fontFamily: root.fontFamily
         bordered: true
@@ -487,7 +488,7 @@ Item {
         color: root.service && root.service.restoreState === "error" ? root.urgent : root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
-        wrapMode: Text.WrapAnywhere
+        wrapMode: Text.WrapAtWordBoundaryOrAnywhere
         anchors.verticalCenter: parent.verticalCenter
       }
 
@@ -507,12 +508,12 @@ Item {
     Text {
       textFormat: Text.PlainText
       width: parent.width
-      text: "Enter open · ⌫ up · [ ] snapshot · R restore · F folder · Esc back"
+      text: "⏎ open · ⌫ up · [ ] snapshot · R restore · F folder"
       color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       horizontalAlignment: Text.AlignHCenter
-      elide: Text.ElideRight
+      wrapMode: Text.WordWrap
     }
   }
 
