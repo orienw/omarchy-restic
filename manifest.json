@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.orienw.restic",
   "name": "Restic Backups",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "author": "Orien",
   "license": "MIT",
   "description": "Health, one-click backups, and file restore for the restic jobs you already run, right in the Omarchy bar.",
