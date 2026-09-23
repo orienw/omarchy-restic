@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "io.github.orienw.restic",
-  "name": "Restic",
+  "name": "Restic Backups",
   "version": "0.2.2",
   "author": "Orien",
   "license": "MIT",
@@ -15,7 +15,7 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Restic",
+    "displayName": "Restic Backups",
     "description": "See backup health, back up now, browse snapshots, and restore files.",
     "category": "System",
     "allowMultiple": false,

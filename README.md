@@ -1,4 +1,4 @@
-# Restic for Omarchy
+# Restic Backups for Omarchy
 
 An Omarchy shell plugin for the restic backups you already run. It finds your existing restic systemd jobs, tells you whether they are working, starts one on demand, and gets files back from any snapshot.
 
