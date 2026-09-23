@@ -389,7 +389,7 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(report["jobs"][0]["source"], "systemd")
         self.assertEqual(report["jobs"][0]["repository"]["snapshotCount"], 2)
         snapshot_call = next(call for call in runner.calls if "snapshots" in call[0])
-        self.assertIn("documents", snapshot_call[0])
+        self.assertIn("--tag=documents", snapshot_call[0])
 
     def test_configured_jobs_merge_with_unmentioned_discovered_jobs(self):
         report = self.collect(DiscoveryRunner(self.discovery_script()))

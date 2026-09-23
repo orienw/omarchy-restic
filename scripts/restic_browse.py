@@ -115,7 +115,7 @@ def list_snapshots(
 ) -> list[dict[str, Any]]:
     command = base + ["snapshots"]
     if job["tag"]:
-        command.extend(["--tag", job["tag"]])
+        command.append("--tag=" + job["tag"])
     try:
         raw = json.loads(run_restic(runner, command, timeout))
     except json.JSONDecodeError as error:

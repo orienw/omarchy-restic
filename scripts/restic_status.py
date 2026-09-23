@@ -1767,7 +1767,7 @@ def collect_repository(
         return failure("unavailable", str(error))
     snapshot_command = base + ["snapshots"]
     if job["tag"]:
-        snapshot_command.extend(["--tag", job["tag"]])
+        snapshot_command.append("--tag=" + job["tag"])
     try:
         snapshots_result = runner.run(snapshot_command, timeout=timeout, env=restic_environment())
     except (OSError, subprocess.TimeoutExpired) as error:
@@ -1794,7 +1794,7 @@ def collect_repository(
 
     stats_command = base + ["stats", "--mode", "raw-data"]
     if job["tag"]:
-        stats_command.extend(["--tag", job["tag"]])
+        stats_command.append("--tag=" + job["tag"])
     stats: dict[str, Any] = {}
     partial_error = ""
     try:

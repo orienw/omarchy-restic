@@ -2,7 +2,7 @@ import json
 import sys
 
 command = sys.argv[1]
-options = dict(zip(sys.argv[2::2], sys.argv[3::2]))
+options = dict(argument.split("=", 1) for argument in sys.argv[2:])
 if command == "snapshots":
     print(json.dumps({"type": "snapshots", "snapshots": [
         {"id": "b" * 64, "shortId": "bbbbbbbb", "time": "2026-08-17T03:30:00Z", "paths": ["/home/test"]},

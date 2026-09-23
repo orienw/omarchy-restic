@@ -83,7 +83,7 @@ Item {
     _exited = false
     loading = true
     lister.command = ["python3", service.browsePath].concat(
-      item.args, ["--config", service.jobsFile, "--job", String(job.id)])
+      item.args, ["--config=" + service.jobsFile, "--job=" + String(job.id)])
     lister.running = true
   }
 
@@ -161,7 +161,7 @@ Item {
       kind: "ls",
       key: listingKey(target),
       select: selectName,
-      args: ["ls", "--snapshot", snapshot.id, "--path", target]
+      args: ["ls", "--snapshot=" + snapshot.id, "--path=" + target]
     })
   }
 

@@ -53,7 +53,7 @@ import datetime
 import json
 import sys
 
-options = dict(zip(sys.argv[1::2], sys.argv[2::2]))
+options = dict(argument.split("=", 1) for argument in sys.argv[1:] if argument.startswith("--") and "=" in argument)
 print(json.dumps({
     "schemaVersion": 1,
     "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),

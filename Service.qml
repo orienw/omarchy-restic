@@ -128,9 +128,9 @@ Item {
     refreshing = true
     var command = [
       "python3", helperPath,
-      "--config", jobsFile,
-      "--repository-cache-seconds", String(repositoryRefreshMinutes * 60),
-      "--log-lines", String(logLines)
+      "--config=" + jobsFile,
+      "--repository-cache-seconds=" + String(repositoryRefreshMinutes * 60),
+      "--log-lines=" + String(logLines)
     ]
     if (forceRepositories === true) command.push("--force-repositories")
     collector.command = command
@@ -199,15 +199,16 @@ Item {
     restorePath = ""
     restoreFolder = ""
     restoreError = ""
+    // "--option=value" keeps a value that starts with "-" from reading as a flag.
     restorer.command = [
       "python3", browsePath, "restore",
-      "--config", jobsFile,
-      "--job", String(jobId),
-      "--snapshot", String(snapshot.id),
-      "--snapshot-time", String(snapshot.time || ""),
-      "--path", String(entry.path),
-      "--type", String(entry.type || "file"),
-      "--target-root", restoreDirectory
+      "--config=" + jobsFile,
+      "--job=" + String(jobId),
+      "--snapshot=" + String(snapshot.id),
+      "--snapshot-time=" + String(snapshot.time || ""),
+      "--path=" + String(entry.path),
+      "--type=" + String(entry.type || "file"),
+      "--target-root=" + restoreDirectory
     ]
     restorer.running = true
     return "started"

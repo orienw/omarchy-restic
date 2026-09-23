@@ -164,6 +164,14 @@ class ResticBrowseTest(unittest.TestCase):
             with self.subTest(snapshot=value), self.assertRaises(restic_browse.BrowseError):
                 restic_browse.snapshot_id(value)
 
+    def test_values_starting_with_a_dash_stay_values(self):
+        args = restic_browse.parser().parse_args([
+            "restore", "--config=-jobs.json", "--job=home", f"--snapshot={SNAPSHOT}",
+            "--path=/home/test/notes.md", "--target-root=-Restored",
+        ])
+        self.assertEqual(args.config.name, "-jobs.json")
+        self.assertEqual(args.target_root.name, "-Restored")
+
     def test_directory_listing_keeps_only_direct_children_with_folders_first(self):
         runner = ListRunner("\n".join([
             json.dumps({"struct_type": "snapshot", "id": SNAPSHOT}),
@@ -190,7 +198,7 @@ class ResticBrowseTest(unittest.TestCase):
         snapshots = restic_browse.list_snapshots({"tag": "home"}, ["restic"], runner, 30)
 
         self.assertEqual([snapshot["shortId"] for snapshot in snapshots], ["bbbbbbbb", "aaaaaaaa"])
-        self.assertEqual(runner.calls[0][-3:], ["snapshots", "--tag", "home"])
+        self.assertEqual(runner.calls[0][-2:], ["snapshots", "--tag=home"])
 
     def test_restic_failures_become_readable_errors(self):
         runner = ListRunner("", 11)
