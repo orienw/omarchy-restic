@@ -1323,10 +1323,13 @@ def journal_runs(
     return parse_journal_runs(result.stdout), ""
 
 
+# This boot's own latest entry names the journal being written. The latest
+# entry across all boots would not: journalctl can merge another journal's
+# clock-skewed entries after it.
 def active_journal(runner: Runner, timeout: int) -> str | None:
     try:
         result = runner.run(
-            ["journalctl", "--user", "--lines=1", "--no-pager", "--output=json"], timeout=timeout
+            ["journalctl", "--user", "--boot=0", "--lines=1", "--no-pager", "--output=json"], timeout=timeout
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

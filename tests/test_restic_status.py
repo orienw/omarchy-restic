@@ -292,7 +292,11 @@ class RollbackRunner(FakeRunner):
             return subprocess.CompletedProcess(command, 0, self.journal_lines(runs, limit), "")
         if command[0] == "journalctl" and "--lines=1" in command:
             self.calls.append((command, env))
-            latest = json.dumps({"MESSAGE": "latest", "__SEQNUM_ID": self.active_journal, "__SEQNUM": "999"})
+            # Merged by wall clock, the latest entry across boots belongs to the
+            # older journal whose clock ran ahead; only this boot's own latest
+            # entry names the journal being written.
+            journal = self.active_journal if "--boot=0" in command or not self.old_successes else "old-journal"
+            latest = json.dumps({"MESSAGE": "latest", "__SEQNUM_ID": journal, "__SEQNUM": "999"})
             return subprocess.CompletedProcess(command, 0, latest + "\n", "")
         return super().run(command, timeout=timeout, env=env)
 
