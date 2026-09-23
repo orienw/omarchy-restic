@@ -90,6 +90,30 @@ ShellRoot {
         root.fail("fresh status did not recover after collection failure or expiry")
         return
       }
+      service.notificationsEnabled = false
+      var failing = function(finishedAt) {
+        return JSON.stringify({
+          schemaVersion: 1, generatedAt: new Date().toISOString(), overallStatus: "attention",
+          summary: {jobs: 1, healthy: 0, running: 0, attention: 1, unknown: 0},
+          config: {status: "ready", error: ""},
+          jobs: [{id: "home", name: "Home", status: "attention",
+            service: {unit: "restic-home.service", lastRun: {finishedAt: finishedAt, result: "failed"}},
+            issues: [{code: "last-run-failed", message: "Backup failed", severity: "critical"}]}]
+        })
+      }
+      service.applyReport(failing("2026-08-17T11:00:00Z"))
+      var firstAlert = Object.keys(service.alertedKeys)
+      service.applyReport(failing("2026-08-17T11:00:00Z"))
+      if (firstAlert.length !== 1 || Object.keys(service.alertedKeys).join() !== firstAlert.join()) {
+        root.fail("a persisting failure was not tracked as one alert")
+        return
+      }
+      service.applyReport(healthy)
+      if (Object.keys(service.alertedKeys).length !== 0) {
+        root.fail("recovery did not clear the alert so a new failure can notify")
+        return
+      }
+
       service.applyReport(JSON.stringify({
         schemaVersion: 1, generatedAt: new Date().toISOString(), overallStatus: "healthy",
         summary: {jobs: 2, healthy: 1, running: 1, attention: 0, unknown: 0},

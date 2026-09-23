@@ -196,3 +196,42 @@ function backupUnit(job) {
 function canBackUp(job) {
   return backupUnit(job) !== "" && job.status !== "running" && !(job.service && job.service.active)
 }
+
+function alertIssue(job) {
+  if (!job || job.status !== "attention") return null
+  var issues = Array.isArray(job.issues) ? job.issues : []
+  for (var i = 0; i < issues.length; i++) {
+    var entry = issues[i]
+    if (!entry || String(entry.code || "").indexOf("repository-") === 0) continue
+    if (entry.severity === "critical" || entry.severity === "warning") return entry
+  }
+  return null
+}
+
+// Identifies one alert-worthy problem, so a job alerts once per failed run
+// or new problem rather than on every refresh while it stays broken.
+function alertKey(job) {
+  var entry = alertIssue(job)
+  if (!entry) return ""
+  var run = null
+  if (entry.code === "last-run-failed") run = job.service ? job.service.lastRun : null
+  else if (entry.code === "integrity-attention") run = job.integrity ? job.integrity.lastRun : null
+  return [job.id, entry.code, run && run.finishedAt ? run.finishedAt : ""].join("|")
+}
+
+function alertCommand(job) {
+  var entry = alertIssue(job)
+  if (!entry) return []
+  var command = [
+    "omarchy-notification-send", "--app-name", "Restic", "-g", "󰁯", "-u", "normal",
+    String(job.name || job.id) + " backup needs attention",
+    // Notification bodies are StyledText, summaries are plain.
+    String(entry.message || job.statusText || "Open the Restic panel for details")
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  ]
+  var unit = backupUnit(job)
+  if (unit !== "")
+    command.push("--exec", "uwsm-app", "--", "xdg-terminal-exec",
+      "journalctl", "--user", "--unit", unit, "--pager-end")
+  return command
+}

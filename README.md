@@ -14,6 +14,7 @@ An Omarchy shell plugin for the restic backups you already run. It finds your ex
 - Optional integrity-check service health
 - Redacted recent logs when a job needs attention
 - A **Back up now** action that starts the job's own systemd service
+- A desktop notification when a job needs attention
 
 Health follows completed systemd runs, not snapshot age. This matters when a backup uses `--skip-if-unchanged`, because a successful unchanged run intentionally creates no snapshot. If no run history survives, the timer's last trigger time is used instead.
 
@@ -125,6 +126,18 @@ Paths expand `~` and environment variables. Backend credentials needed by restic
 - Press `R` in the panel to force a repository refresh.
 - Press `↑`/`↓` or `j`/`k` to select a job, then `B` to back it up. With a single job, `B` needs no selection.
 
+## Notifications
+
+When a job fails, falls overdue, loses its timer, or fails its integrity check, the plugin sends one desktop notification. Clicking it opens the job's journal in a terminal. It notifies again for each new failed run, or when a fixed job breaks again, but not on every refresh while a job stays broken. Restarting the shell notifies about problems that are still open.
+
+A repository that is temporarily unreachable, such as a NAS while you are away from home, does not notify. It still shows in the bar and panel.
+
+Turn notifications off with:
+
+```bash
+omarchy bar set io.github.orienw.restic notifications false --json
+```
+
 ## Update
 
 ```bash
@@ -141,4 +154,4 @@ Removal only removes the Omarchy shell integration. It does not stop or change b
 
 ## Not included
 
-Notifications may come later. Repository creation, prune, unlock, retention editing, and restore are out of scope; use restic directly.
+Repository creation, prune, unlock, retention editing, and restore are out of scope; use restic directly.

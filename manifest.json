@@ -24,7 +24,8 @@
       "jobsFile": "~/.config/omarchy-restic/jobs.json",
       "refreshIntervalSec": 60,
       "repositoryRefreshMinutes": 15,
-      "logLines": 12
+      "logLines": 12,
+      "notifications": true
     },
     "schema": [
       {
@@ -52,6 +53,13 @@
         "max": 1440,
         "step": 5,
         "defaultValue": 15
+      },
+      {
+        "key": "notifications",
+        "type": "boolean",
+        "label": "Failure notifications",
+        "description": "Notify once when a job fails, falls overdue, or loses its schedule.",
+        "defaultValue": true
       },
       {
         "key": "logLines",

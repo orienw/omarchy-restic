@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import Quickshell.Io
 import "Model.js" as Model
 
@@ -16,6 +17,7 @@ Item {
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 60, 15, 3600)
   readonly property int repositoryRefreshMinutes: intSetting("repositoryRefreshMinutes", 15, 1, 1440)
   readonly property int logLines: intSetting("logLines", 12, 1, 100)
+  property bool notificationsEnabled: setting("notifications", true) !== false
   readonly property string helperPath: decodeURIComponent(
     String(Qt.resolvedUrl("scripts/restic_status.py")).replace(/^file:\/\//, ""))
 
@@ -25,6 +27,7 @@ Item {
   property bool refreshPending: false
   property string startingJob: ""
   property string actionError: ""
+  property var alertedKeys: ({})
   property var report: ({
     schemaVersion: 1,
     generatedAt: null,
@@ -130,7 +133,20 @@ Item {
     report = parsed.report
     nowMs = Date.now()
     _collectorError = ""
+    notifyNewAlerts()
     return true
+  }
+
+  function notifyNewAlerts() {
+    var current = {}
+    for (var i = 0; i < jobs.length; i++) {
+      var key = Model.alertKey(jobs[i])
+      if (key === "") continue
+      current[key] = true
+      if (!alertedKeys[key] && notificationsEnabled)
+        Quickshell.execDetached(Model.alertCommand(jobs[i]))
+    }
+    alertedKeys = current
   }
 
   function elideError(value) {

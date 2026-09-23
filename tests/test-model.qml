@@ -151,6 +151,49 @@ ShellRoot {
         root.fail("an invalid unit name was accepted for a backup start")
         return
       }
+      var failedJob = {
+        id: "home", name: "Home", status: "attention",
+        service: { unit: "restic-home.service", lastRun: { finishedAt: "2026-08-17T11:00:00Z", result: "failed" } },
+        issues: [
+          { code: "last-run-failed", message: "Fatal: <b>wrong</b> password & key", severity: "critical" },
+          { code: "repository-stale", message: "Repository unreachable", severity: "warning" }
+        ]
+      }
+      var firstKey = Model.alertKey(failedJob)
+      var nextRun = JSON.parse(JSON.stringify(failedJob))
+      nextRun.service.lastRun.finishedAt = "2026-08-18T11:00:00Z"
+      if (firstKey === "" || firstKey === Model.alertKey(nextRun)) {
+        root.fail("each failed run did not get its own alert key")
+        return
+      }
+      var command = Model.alertCommand(failedJob)
+      if (command[0] !== "omarchy-notification-send" || command[7] !== "Home backup needs attention"
+          || command[8] !== "Fatal: &lt;b&gt;wrong&lt;/b&gt; password &amp; key"
+          || command.indexOf("restic-home.service") === -1) {
+        root.fail("alert command was not built safely: " + JSON.stringify(command))
+        return
+      }
+      var offline = { id: "nas", status: "attention", issues: [
+        { code: "repository-unavailable", message: "Repository unreachable", severity: "warning" }
+      ] }
+      if (Model.alertKey(offline) !== "" || Model.alertCommand(offline).length !== 0) {
+        root.fail("a transient repository outage raised an alert")
+        return
+      }
+      if (Model.alertKey({ id: "home", status: "healthy", issues: failedJob.issues }) !== "") {
+        root.fail("a job outside attention raised an alert")
+        return
+      }
+      var overdue = { id: "home", status: "attention", issues: [
+        { code: "run-overdue", message: "No successful run in 40 hours", severity: "critical" }
+      ] }
+      var laterOverdue = { id: "home", status: "attention", issues: [
+        { code: "run-overdue", message: "No successful run in 41 hours", severity: "critical" }
+      ] }
+      if (Model.alertKey(overdue) === "" || Model.alertKey(overdue) !== Model.alertKey(laterOverdue)) {
+        root.fail("an overdue job would alert again every hour")
+        return
+      }
       console.log("model tests passed")
       Qt.quit()
     }
