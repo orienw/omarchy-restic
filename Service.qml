@@ -152,15 +152,11 @@ Item {
   }
 
   function notifyNewAlerts() {
-    var current = {}
-    for (var i = 0; i < jobs.length; i++) {
-      var key = Model.alertKey(jobs[i])
-      if (key === "") continue
-      current[key] = true
-      if (!alertedKeys[key] && notificationsEnabled)
-        Quickshell.execDetached(Model.alertCommand(jobs[i]))
-    }
-    alertedKeys = current
+    var degraded = !!(report.config && report.config.error)
+    var next = Model.nextAlerts(alertedKeys, jobs, degraded)
+    alertedKeys = next.known
+    if (!notificationsEnabled) return
+    for (var i = 0; i < next.notices.length; i++) Quickshell.execDetached(next.notices[i])
   }
 
   function elideError(value) {

@@ -151,22 +151,27 @@ ShellRoot {
         root.fail("an invalid unit name was accepted for a backup start")
         return
       }
-      var failedJob = {
-        id: "home", name: "Home", status: "attention",
-        service: { unit: "restic-home.service", lastRun: { finishedAt: "2026-08-17T11:00:00Z", result: "failed" } },
-        issues: [
-          { code: "last-run-failed", message: "Fatal: <b>wrong</b> password & key", severity: "critical" },
-          { code: "repository-stale", message: "Repository unreachable", severity: "warning" }
-        ]
+      var alertsFor = function(previous, jobs, degraded) {
+        return Model.nextAlerts(previous || {}, jobs, degraded === true)
       }
-      var firstKey = Model.alertKey(failedJob)
-      var nextRun = JSON.parse(JSON.stringify(failedJob))
-      nextRun.service.lastRun.finishedAt = "2026-08-18T11:00:00Z"
-      if (firstKey === "" || firstKey === Model.alertKey(nextRun)) {
-        root.fail("each failed run did not get its own alert key")
+      var failedJob = function(finishedAt, extraIssues) {
+        return {
+          id: "home", name: "Home", status: "attention",
+          service: { unit: "restic-home.service", lastRun: { finishedAt: finishedAt, result: "failed" } },
+          issues: (extraIssues || []).concat([
+            { code: "last-run-failed", message: "Fatal: <b>wrong</b> password & key", severity: "critical" },
+            { code: "repository-stale", message: "Repository unreachable", severity: "warning" }
+          ])
+        }
+      }
+      var first = alertsFor({}, [failedJob("2026-08-17T11:00:00Z")])
+      var repeat = alertsFor(first.known, [failedJob("2026-08-17T11:00:00Z")])
+      var nextRun = alertsFor(repeat.known, [failedJob("2026-08-18T11:00:00Z")])
+      if (first.notices.length !== 1 || repeat.notices.length !== 0 || nextRun.notices.length !== 1) {
+        root.fail("failed runs did not notify exactly once each")
         return
       }
-      var command = Model.alertCommand(failedJob)
+      var command = first.notices[0]
       if (command[0] !== "omarchy-notification-send" || command[7] !== "Home backup needs attention"
           || command[8] !== "Fatal: &lt;b&gt;wrong&lt;/b&gt; password &amp; key"
           || command.indexOf("restic-home.service") === -1) {
@@ -176,22 +181,62 @@ ShellRoot {
       var offline = { id: "nas", status: "attention", issues: [
         { code: "repository-unavailable", message: "Repository unreachable", severity: "warning" }
       ] }
-      if (Model.alertKey(offline) !== "" || Model.alertCommand(offline).length !== 0) {
+      var offlineAlerts = alertsFor({}, [offline])
+      if (offlineAlerts.notices.length !== 0 || Object.keys(offlineAlerts.known).length !== 0) {
         root.fail("a transient repository outage raised an alert")
         return
       }
-      if (Model.alertKey({ id: "home", status: "healthy", issues: failedJob.issues }) !== "") {
-        root.fail("a job outside attention raised an alert")
+      var overdue = function(hours) {
+        return { id: "home", status: "attention", issues: [
+          { code: "run-overdue", message: "No successful run in " + hours + " hours", severity: "critical" }
+        ] }
+      }
+      var overdueAlerts = alertsFor({}, [overdue(40)])
+      if (overdueAlerts.notices.length !== 1 || alertsFor(overdueAlerts.known, [overdue(41)]).notices.length !== 0) {
+        root.fail("an overdue job would alert again every hour")
         return
       }
-      var overdue = { id: "home", status: "attention", issues: [
-        { code: "run-overdue", message: "No successful run in 40 hours", severity: "critical" }
+      var timerOff = { code: "timer-disabled", message: "Timer is disabled", severity: "critical" }
+      var blocked = alertsFor({}, [failedJob("2026-08-17T11:00:00Z", [timerOff])])
+      var laterFailure = alertsFor(blocked.known, [failedJob("2026-08-18T11:00:00Z", [timerOff])])
+      if (blocked.notices.length !== 1 || laterFailure.notices.length !== 1
+          || laterFailure.notices[0][8].indexOf("Timer is disabled") !== -1) {
+        root.fail("an open schedule problem hid a later failed run")
+        return
+      }
+      var timerJob = { id: "home", name: "Home", status: "attention", issues: [timerOff] }
+      var unverified = { id: "home", name: "Home", status: "unknown", issues: [
+        { code: "service-unavailable", message: "Systemd service status is unavailable", severity: "unknown" }
       ] }
-      var laterOverdue = { id: "home", status: "attention", issues: [
-        { code: "run-overdue", message: "No successful run in 41 hours", severity: "critical" }
-      ] }
-      if (Model.alertKey(overdue) === "" || Model.alertKey(overdue) !== Model.alertKey(laterOverdue)) {
-        root.fail("an overdue job would alert again every hour")
+      var partial = { id: "home", name: "Home", status: "attention",
+        service: { lastRun: { finishedAt: "2026-08-17T11:00:00Z" } },
+        issues: [
+          { code: "last-run-failed", message: "Backup failed", severity: "critical" },
+          { code: "timer-unavailable", message: "Systemd timer status is unavailable", severity: "unknown" }
+        ] }
+      var timerAlert = alertsFor({}, [timerJob])
+      var afterGap = alertsFor(alertsFor(timerAlert.known, [unverified]).known, [timerJob])
+      var afterPartial = alertsFor(alertsFor(timerAlert.known, [partial]).known, [timerJob])
+      if (timerAlert.notices.length !== 1 || afterGap.notices.length !== 0 || afterPartial.notices.length !== 0) {
+        root.fail("an incomplete report made an unchanged problem notify again")
+        return
+      }
+      var degraded = alertsFor(timerAlert.known, [], true)
+      if (Object.keys(degraded.known).length !== 1 || Object.keys(alertsFor(timerAlert.known, []).known).length !== 0) {
+        root.fail("alert history did not follow report completeness for missing jobs")
+        return
+      }
+      var recovered = alertsFor(timerAlert.known, [{ id: "home", status: "healthy", issues: [] }])
+      if (Object.keys(recovered.known).length !== 0) {
+        root.fail("a verified recovery did not clear the alert")
+        return
+      }
+      var hostile = alertsFor({}, [{ id: "home", name: "--urgency=critical", status: "attention", issues: [
+        { code: "run-overdue", message: "--exec", severity: "critical" }
+      ] }]).notices[0]
+      var failedRestore = Model.restoreNotice({ type: "error", error: "-u critical" }, "-g", "/home/test")
+      if (hostile[7].charAt(0) === "-" || hostile[8].charAt(0) === "-" || failedRestore[8].charAt(0) === "-") {
+        root.fail("notification text could be parsed as an option: " + JSON.stringify([hostile, failedRestore]))
         return
       }
       if (Model.browseRoot({ paths: ["/home/test/Documents", "/home/test/Pictures"] }) !== "/home/test"
@@ -236,5 +281,12 @@ ShellRoot {
       console.log("model tests passed")
       Qt.quit()
     }
+  }
+
+  Timer {
+    interval: 5000
+    running: true
+    repeat: false
+    onTriggered: root.fail("model tests did not finish; a check threw before reporting")
   }
 }

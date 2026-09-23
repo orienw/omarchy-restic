@@ -207,42 +207,90 @@ function canBackUp(job) {
   return backupUnit(job) !== "" && job.status !== "running" && !serviceActive(job)
 }
 
-function alertIssue(job) {
-  if (!job || job.status !== "attention") return null
+// Every problem worth a notification, each with its own identity, so one
+// open problem cannot hide a later failed run.
+function alertIssues(job) {
+  if (!job || job.status !== "attention") return []
   var issues = Array.isArray(job.issues) ? job.issues : []
+  var alerts = []
   for (var i = 0; i < issues.length; i++) {
     var entry = issues[i]
     if (!entry || String(entry.code || "").indexOf("repository-") === 0) continue
-    if (entry.severity === "critical" || entry.severity === "warning") return entry
+    if (entry.severity !== "critical" && entry.severity !== "warning") continue
+    var run = null
+    if (entry.code === "last-run-failed") run = job.service ? job.service.lastRun : null
+    else if (entry.code === "integrity-attention") run = job.integrity ? job.integrity.lastRun : null
+    alerts.push({ key: [job.id, entry.code, run && run.finishedAt ? run.finishedAt : ""].join("|"), issue: entry })
   }
-  return null
+  return alerts
 }
 
-// Identifies one alert-worthy problem, so a job alerts once per failed run
-// or new problem rather than on every refresh while it stays broken.
-function alertKey(job) {
-  var entry = alertIssue(job)
-  if (!entry) return ""
-  var run = null
-  if (entry.code === "last-run-failed") run = job.service ? job.service.lastRun : null
-  else if (entry.code === "integrity-attention") run = job.integrity ? job.integrity.lastRun : null
-  return [job.id, entry.code, run && run.finishedAt ? run.finishedAt : ""].join("|")
+// Only a job whose systemd state was fully read can prove a problem is gone.
+function observedFully(job) {
+  if (!job || job.status === "unknown") return false
+  var issues = Array.isArray(job.issues) ? job.issues : []
+  for (var i = 0; i < issues.length; i++) {
+    if (issues[i] && issues[i].severity === "unknown") return false
+  }
+  return true
 }
 
-function alertCommand(job) {
-  var entry = alertIssue(job)
-  if (!entry) return []
+// Remembers alerts, as key -> job id, until a report proves the problem is
+// gone, so an incomplete report cannot make an open problem notify again.
+function nextAlerts(previous, jobs, degraded) {
+  var known = {}
+  var seen = {}
+  var notices = []
+  var list = Array.isArray(jobs) ? jobs : []
+  var key
+  for (var i = 0; i < list.length; i++) {
+    var job = list[i]
+    var id = String(job.id)
+    seen[id] = true
+    if (!observedFully(job)) {
+      for (key in previous) {
+        if (previous[key] === id) known[key] = id
+      }
+    }
+    var fresh = []
+    var alerts = alertIssues(job)
+    for (var a = 0; a < alerts.length; a++) {
+      known[alerts[a].key] = id
+      if (!previous[alerts[a].key]) fresh.push(alerts[a])
+    }
+    if (fresh.length > 0) notices.push(alertCommand(job, fresh))
+  }
+  if (degraded) {
+    for (key in previous) {
+      if (!seen[previous[key]]) known[key] = previous[key]
+    }
+  }
+  return { known: known, notices: notices }
+}
+
+function alertCommand(job, alerts) {
+  var messages = []
+  for (var i = 0; i < alerts.length; i++)
+    messages.push(String(alerts[i].issue.message || job.statusText || "Open the Restic panel for details"))
   var command = [
     "omarchy-notification-send", "--app-name", "Restic", "-g", "󰁯", "-u", "normal",
-    String(job.name || job.id) + " backup needs attention",
+    notificationText(String(job.name || job.id) + " backup needs attention"),
     // Notification bodies are StyledText, summaries are plain.
-    escapeMarkup(entry.message || job.statusText || "Open the Restic panel for details")
+    notificationText(escapeMarkup(messages.join("\n")))
   ]
   var unit = backupUnit(job)
   if (unit !== "")
     command.push("--exec", "uwsm-app", "--", "xdg-terminal-exec",
       "journalctl", "--user", "--unit", unit, "--pager-end")
   return command
+}
+
+// omarchy-notification-send reads a leading "-" as an option, so a job
+// named "--urgency=critical" would change the notification instead of
+// titling it. A zero-width space keeps such text positional and invisible.
+function notificationText(value) {
+  var text = String(value)
+  return text.charAt(0) === "-" ? "\u200b" + text : text
 }
 
 function escapeMarkup(value) {
@@ -306,9 +354,12 @@ function restoreNotice(event, name, home) {
   var base = ["omarchy-notification-send", "--app-name", "Restic", "-g", "󰁯", "-u", "normal"]
   if (event.type === "done")
     return base.concat([
-      "Restored " + name,
-      escapeMarkup(tildePath(event.path, home)),
+      notificationText("Restored " + name),
+      notificationText(escapeMarkup(tildePath(event.path, home))),
       "--exec", "uwsm-app", "--", "xdg-open", String(event.folder)
     ])
-  return base.concat(["Could not restore " + name, escapeMarkup(event.error || "Restore failed")])
+  return base.concat([
+    notificationText("Could not restore " + name),
+    notificationText(escapeMarkup(event.error || "Restore failed"))
+  ])
 }
