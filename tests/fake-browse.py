@@ -11,8 +11,11 @@ if command == "snapshots":
 elif options["--path"] == "/home/test":
     print(json.dumps({"type": "entries", "path": "/home/test", "truncated": False, "entries": [
         {"name": "Documents", "type": "dir", "path": "/home/test/Documents", "size": None},
+        {"name": "Pictures", "type": "dir", "path": "/home/test/Pictures", "size": None},
         {"name": "<b>ENTRY_LITERAL</b>.txt", "type": "file", "path": "/home/test/<b>ENTRY_LITERAL</b>.txt", "size": 42},
     ]}))
+elif options["--path"] == "/home/test/Pictures" and options["--snapshot"] == "a" * 64:
+    print(json.dumps({"type": "error", "error": "path /home/test/Pictures: not found"}))
 else:
     print(json.dumps({"type": "entries", "path": options["--path"], "truncated": False, "entries": [
         {"name": "notes.md", "type": "file", "path": options["--path"] + "/notes.md", "size": 1024},

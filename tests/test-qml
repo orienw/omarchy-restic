@@ -43,6 +43,7 @@ ln -s "$PROJECT_DIR/Model.js" "$MODEL_TEST_DIR/Model.js"
 
 run_test "$MODEL_TEST_DIR/test-model.qml" "model tests passed"
 run_test "$TEST_DIR/test-service.qml" "service tests passed"
+run_test "$TEST_DIR/test-browser.qml" "browser tests passed"
 
 STARTUP_PLUGIN_DIR="$TEST_RUNTIME/plugin # 100% ü"
 mkdir -p "$STARTUP_PLUGIN_DIR/scripts"

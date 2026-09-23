@@ -28,6 +28,8 @@ Item {
   property bool loading: false
   property string error: ""
   property var listings: ({})
+  property int session: 0
+  property string shownKey: ""
 
   property var _active: null
   property var _pending: null
@@ -41,9 +43,11 @@ Item {
   readonly property var selectedEntry: selectedIndex >= 0 && selectedIndex < entries.length
     ? entries[selectedIndex]
     : null
-  readonly property var candidate: selectedEntry
-    ? selectedEntry
-    : (path !== "/" ? { name: Model.baseName(path), path: path, type: "dir" } : null)
+  // Restore only what the visible listing proves exists in this snapshot.
+  readonly property bool listingReady: !!snapshot && shownKey === listingKey(path)
+  readonly property var candidate: !listingReady ? null
+    : selectedEntry ? selectedEntry
+    : (path !== "/" && entries.length > 0 ? { name: Model.baseName(path), path: path, type: "dir" } : null)
   readonly property var restoreTarget: candidate && Model.exactPath(candidate.path) ? candidate : null
   readonly property bool restoring: !!service && service.restoreState === "running"
 
@@ -52,7 +56,9 @@ Item {
   implicitHeight: column.implicitHeight
 
   function open(target) {
+    session++
     job = target
+    shownKey = ""
     snapshots = []
     snapshotIndex = 0
     listings = ({})
@@ -66,7 +72,7 @@ Item {
   }
 
   function request(item) {
-    item.jobId = String(job.id)
+    item.session = session
     if (lister.running) {
       _pending = item
       return
@@ -77,7 +83,7 @@ Item {
     _exited = false
     loading = true
     lister.command = ["python3", service.browsePath].concat(
-      item.args, ["--config", service.jobsFile, "--job", item.jobId])
+      item.args, ["--config", service.jobsFile, "--job", String(job.id)])
     lister.running = true
   }
 
@@ -94,8 +100,11 @@ Item {
     }
   }
 
+  // Results and errors apply only to the browser session and listing that
+  // asked for them. Anything else arrived after the user moved on.
   function handle(item, output) {
-    if (!item || !job || item.jobId !== String(job.id)) return
+    if (!item || item.session !== session) return
+    var current = item.kind === "snapshots" || item.key === listingKey(path)
     var lines = String(output || "").trim().split("\n")
     var result = null
     try {
@@ -104,17 +113,16 @@ Item {
       result = null
     }
     if (!result || result.type === "error") {
-      error = result && result.error ? String(result.error) : "Could not read the repository"
+      if (current) error = result && result.error ? String(result.error) : "Could not read the repository"
       return
     }
-    error = ""
     if (item.kind === "snapshots") {
       snapshots = Array.isArray(result.snapshots) ? result.snapshots : []
       snapshotIndex = 0
       if (snapshot) navigate(Model.browseRoot(snapshot), "")
     } else {
       listings[item.key] = result
-      if (item.key === listingKey(path)) show(result, item.select)
+      if (current) show(result, item.select)
     }
   }
 
@@ -123,6 +131,8 @@ Item {
   }
 
   function show(listing, selectName) {
+    error = ""
+    shownKey = listingKey(path)
     entries = Array.isArray(listing.entries) ? listing.entries : []
     truncated = listing.truncated === true
     selectedIndex = -1
@@ -142,6 +152,8 @@ Item {
       show(cached, selectName)
       return
     }
+    error = ""
+    shownKey = ""
     entries = []
     selectedIndex = -1
     truncated = false
@@ -369,8 +381,8 @@ Item {
         anchors.centerIn: parent
         width: parent.width - Style.space(20)
         text: root.error !== "" ? root.error
-          : root.loading && root.entries.length === 0 ? "Loading..."
-          : root.snapshot && root.entries.length === 0 ? "Nothing here in this snapshot"
+          : root.snapshot && !root.listingReady ? "Loading..."
+          : root.listingReady && root.entries.length === 0 ? "Nothing here in this snapshot"
           : ""
         color: root.error !== "" ? root.urgent : root.dim
         font.family: root.fontFamily
