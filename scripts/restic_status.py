@@ -1576,13 +1576,14 @@ def cache_is_fresh(
     return bool(
         checked
         and (now - checked).total_seconds() <= max_age_seconds
-        and not predates(checked, last_run_at)
+        and handled_run(cache, last_run_at)
     )
 
 
-def predates(value: datetime | None, reference: str | None) -> bool:
-    finished = parse_iso(reference)
-    return bool(finished and value and value < finished)
+# Identity, not clock order: a completed run the cache has not seen yet
+# triggers one refresh even if the clock has since moved backwards.
+def handled_run(cache: dict[str, Any], last_run_at: str | None) -> bool:
+    return cache.get("handledRunAt") == last_run_at
 
 
 def repository_from_cache(cache: dict[str, Any], status: str, source: str, error: str = "") -> dict[str, Any]:
@@ -1603,9 +1604,15 @@ def repository_cache_failure(
     status: str,
     error: str,
     now: datetime,
+    last_run_at: str | None = None,
 ) -> dict[str, Any]:
     updated = dict(cached)
-    updated.update({"status": status, "error": error, "lastAttemptAt": isoformat(now)})
+    updated.update({
+        "status": status,
+        "error": error,
+        "lastAttemptAt": isoformat(now),
+        "handledRunAt": last_run_at,
+    })
     try:
         write_cache(path, updated)
     except OSError:
@@ -1631,6 +1638,7 @@ def repository_uncached_failure(
     status: str,
     error: str,
     now: datetime,
+    last_run_at: str | None = None,
 ) -> dict[str, Any]:
     try:
         write_cache(
@@ -1639,6 +1647,7 @@ def repository_uncached_failure(
                 "cacheKey": key,
                 "checkedAt": None,
                 "lastAttemptAt": isoformat(now),
+                "handledRunAt": last_run_at,
                 "status": status,
                 "error": error,
                 "snapshotCount": 0,
@@ -1674,9 +1683,14 @@ def collect_repository(
         ensure_private_cache_directory(cache_dir, path.parent)
     except OSError as error:
         return repository_uncached_failure(
-            path, key, "unavailable", f"Could not secure plugin cache: {sanitize(error)}", now
+            path, key, "unavailable", f"Could not secure plugin cache: {sanitize(error)}", now, last_run_at
         )
     cached = load_cache(path, key)
+
+    def failure(status: str, message: str, cached_status: str = "stale") -> dict[str, Any]:
+        if cached:
+            return repository_cache_failure(path, cached, cached_status, message, now, last_run_at)
+        return repository_uncached_failure(path, key, status, message, now, last_run_at)
 
     if active:
         if cached:
@@ -1697,7 +1711,7 @@ def collect_repository(
         and cached
         and attempted
         and (now - attempted).total_seconds() <= cache_seconds
-        and not predates(attempted, last_run_at)
+        and handled_run(cached, last_run_at)
     ):
         return repository_from_cache(
             cached,
@@ -1709,44 +1723,26 @@ def collect_repository(
     try:
         base = restic_base(job, config_path, cache_dir)
     except RepositoryUnavailable as error:
-        return (
-            repository_cache_failure(path, cached, "stale", str(error), now)
-            if cached
-            else repository_uncached_failure(path, key, "unavailable", str(error), now)
-        )
+        return failure("unavailable", str(error))
     snapshot_command = base + ["snapshots"]
     if job["tag"]:
         snapshot_command.extend(["--tag", job["tag"]])
     try:
         snapshots_result = runner.run(snapshot_command, timeout=timeout, env=restic_environment())
     except (OSError, subprocess.TimeoutExpired) as error:
-        message = sanitize(error)
-        return (
-            repository_cache_failure(path, cached, "stale", message, now)
-            if cached
-            else repository_uncached_failure(path, key, "unavailable", message, now)
-        )
+        return failure("unavailable", sanitize(error))
 
     if snapshots_result.returncode != 0:
         status = restic_failure_status(snapshots_result.returncode)
         message = sanitize(snapshots_result.stderr or snapshots_result.stdout or "Restic snapshot query failed")
-        if cached:
-            if status == "busy":
-                return repository_cache_failure(path, cached, "busy", message, now)
-            return repository_cache_failure(path, cached, "stale", message, now)
-        return repository_uncached_failure(path, key, status, message, now)
+        return failure(status, message, "busy" if status == "busy" else "stale")
 
     try:
         raw_snapshots = json.loads(snapshots_result.stdout)
     except json.JSONDecodeError:
         raw_snapshots = None
     if not isinstance(raw_snapshots, list):
-        message = "Restic returned invalid snapshot JSON"
-        return (
-            repository_cache_failure(path, cached, "stale", message, now)
-            if cached
-            else repository_uncached_failure(path, key, "unavailable", message, now)
-        )
+        return failure("unavailable", "Restic returned invalid snapshot JSON")
 
     snapshots = [normalized_snapshot(item) for item in raw_snapshots if isinstance(item, dict)]
     snapshots.sort(
@@ -1778,6 +1774,7 @@ def collect_repository(
         "cacheKey": key,
         "checkedAt": checked_at,
         "lastAttemptAt": checked_at,
+        "handledRunAt": last_run_at,
         "status": "partial" if partial_error else "ready",
         "error": partial_error,
         "snapshotCount": len(snapshots),

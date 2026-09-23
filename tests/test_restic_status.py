@@ -903,6 +903,25 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(report["jobs"][0]["repository"]["status"], "stale")
         self.assertFalse(any("snapshots" in command for command, _ in backed_off.calls))
 
+    def test_clock_rollback_after_a_run_refreshes_once_then_caches(self):
+        self.collect(FakeRunner())
+        # The run finished an hour "after" now: the clock has since moved back.
+        future_run = FakeRunner(history_age_hours=-1)
+        self.collect(future_run, now=NOW + timedelta(minutes=1))
+        self.assertTrue(any("snapshots" in command for command, _ in future_run.calls))
+
+        settled = FakeRunner(history_age_hours=-1)
+        self.collect(settled, now=NOW + timedelta(minutes=2))
+        self.assertFalse(any("snapshots" in command for command, _ in settled.calls))
+
+    def test_clock_rollback_after_a_run_keeps_failure_backoff(self):
+        self.collect(FakeRunner())
+        self.collect(FakeRunner(history_age_hours=-1, restic_error=1), now=NOW + timedelta(minutes=1))
+
+        backed_off = FakeRunner(history_age_hours=-1)
+        self.collect(backed_off, now=NOW + timedelta(minutes=2))
+        self.assertFalse(any("snapshots" in command for command, _ in backed_off.calls))
+
     def test_forced_repository_refresh_bypasses_failure_backoff(self):
         self.collect(FakeRunner())
         self.collect(FakeRunner(restic_error=1), force=True, now=NOW + timedelta(minutes=20))
