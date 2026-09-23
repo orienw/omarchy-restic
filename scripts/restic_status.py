@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import functools
 import hashlib
 import json
 import os
@@ -1128,7 +1129,10 @@ def service_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
             "ExecMainStatus",
             "ExecMainStartTimestamp",
             "ExecMainExitTimestamp",
+            "ExecMainExitTimestampMonotonic",
             "StateChangeTimestamp",
+            "StateChangeTimestampMonotonic",
+            "InvocationID",
         ],
         runner,
         timeout,
@@ -1158,7 +1162,10 @@ def service_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
         "exitStatus": exit_status,
         "startedAt": iso_from_systemd_timestamp(props.get("ExecMainStartTimestamp")),
         "finishedAt": iso_from_systemd_timestamp(props.get("ExecMainExitTimestamp")),
+        "finishedMonotonic": microseconds(props.get("ExecMainExitTimestampMonotonic")),
         "stateChangedAt": iso_from_systemd_timestamp(props.get("StateChangeTimestamp")),
+        "stateChangedMonotonic": microseconds(props.get("StateChangeTimestampMonotonic")),
+        "invocationId": props.get("InvocationID", ""),
         "active": active_state in {"active", "activating", "reloading"},
     }
 
@@ -1238,11 +1245,30 @@ def parse_journal_lines(output: str) -> list[dict[str, Any]]:
     return entries
 
 
+def microseconds(value: Any) -> int | None:
+    try:
+        result = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    return result if result > 0 else None
+
+
+@functools.cache
+def current_boot_id() -> str:
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip().replace("-", "")
+    except OSError:
+        return ""
+
+
+# Runs are ordered by the journal, which follows monotonic time within a
+# boot, rather than by wall clock, so a clock stepped backwards cannot make
+# a newer run look older.
 def parse_journal_runs(output: str) -> list[dict[str, Any]]:
     invocations: dict[str, dict[str, Any]] = {}
     completions: dict[str, dict[str, Any]] = {}
 
-    for entry in parse_journal_lines(output):
+    for order, entry in enumerate(parse_journal_lines(output)):
         message_id = str(entry.get("MESSAGE_ID") or "")
         invocation_id = str(entry.get("USER_INVOCATION_ID") or "")
         timestamp = iso_from_microseconds(entry.get("__REALTIME_TIMESTAMP"))
@@ -1278,9 +1304,14 @@ def parse_journal_runs(output: str) -> list[dict[str, Any]]:
             invocation["durationSec"] = elapsed_seconds(
                 invocation.get("startedAt"), timestamp
             )
-            completions[invocation_id] = dict(invocation)
+            completions[invocation_id] = dict(
+                invocation,
+                _order=order,
+                _monotonic=microseconds(entry.get("__MONOTONIC_TIMESTAMP")),
+                _boot=str(entry.get("_BOOT_ID") or ""),
+            )
 
-    return sorted(completions.values(), key=lambda run: run.get("finishedAt", ""))
+    return sorted(completions.values(), key=lambda run: run["_order"])
 
 
 def journal_history(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
@@ -1345,47 +1376,76 @@ def fallback_run_from_systemd(state: dict[str, Any]) -> dict[str, Any] | None:
             message = f"Last run exited with status {exit_status}"
         else:
             message = "Service result: failed"
+        monotonic = state.get("finishedMonotonic")
+        if finished and finished == state.get("stateChangedAt"):
+            monotonic = state.get("stateChangedMonotonic")
         return {
-            "invocationId": "",
+            "invocationId": state.get("invocationId", ""),
             "startedAt": state.get("startedAt"),
             "finishedAt": finished,
             "durationSec": elapsed_seconds(state.get("startedAt"), finished),
             "result": "failed",
             "message": message,
+            "_monotonic": monotonic,
         }
 
     if not finished:
         return None
     return {
-        "invocationId": "",
+        "invocationId": state.get("invocationId", ""),
         "startedAt": state.get("startedAt"),
         "finishedAt": finished,
         "durationSec": elapsed_seconds(state.get("startedAt"), finished),
         "result": "success",
         "message": "Completed successfully",
+        "_monotonic": state.get("finishedMonotonic"),
     }
+
+
+# The unit's own state always describes a run from this boot. Within a boot,
+# monotonic time orders runs even across wall-clock steps; wall clock is the
+# fallback when either side lacks it. A failure wins for the same run or a tie.
+def later_run(journal: dict[str, Any] | None, systemd: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not journal or not systemd:
+        return journal or systemd
+    if not systemd.get("finishedAt"):
+        return systemd
+    same = journal.get("invocationId") and journal["invocationId"] == systemd.get("invocationId")
+    if not same:
+        if journal.get("_boot") and journal["_boot"] != current_boot_id():
+            return systemd
+        journal_time, systemd_time = journal.get("_monotonic"), systemd.get("_monotonic")
+        if journal_time is None or systemd_time is None:
+            journal_time, systemd_time = journal.get("finishedAt") or "", systemd["finishedAt"]
+        if journal_time != systemd_time:
+            return journal if journal_time > systemd_time else systemd
+    if systemd.get("result") == "failed" and journal.get("result") != "failed":
+        return systemd
+    return journal
+
+
+def public_run(run: dict[str, Any] | None) -> dict[str, Any] | None:
+    return {key: value for key, value in run.items() if not key.startswith("_")} if run else None
+
+
+def run_identity(run: dict[str, Any] | None) -> str | None:
+    return (run.get("invocationId") or run.get("finishedAt")) if run else None
 
 
 def collect_unit(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
     state = service_state(unit, runner, timeout)
     history = journal_history(unit, runner, timeout)
-    systemd_run = fallback_run_from_systemd(state)
-    runs = [run for run in (history.get("lastRun"), systemd_run) if run]
-    last_run = max(
-        runs,
-        key=lambda run: (run.get("finishedAt") or "", run.get("result") == "failed"),
-        default=None,
-    )
-    if systemd_run and not systemd_run.get("finishedAt"):
-        last_run = systemd_run
+    last_run = later_run(history.get("lastRun"), fallback_run_from_systemd(state))
     last_success = history.get("lastSuccessAt")
     if last_run and last_run.get("result") == "success":
-        last_success = max(last_success or "", last_run.get("finishedAt") or "") or None
+        last_success = last_run.get("finishedAt") or last_success
+    for key in ("finishedMonotonic", "stateChangedMonotonic"):
+        state.pop(key, None)
     state.update(
         {
             "historyAvailable": history.get("available", False),
             "historyError": history.get("error", ""),
-            "lastRun": last_run,
+            "lastRun": public_run(last_run),
             "lastSuccessAt": last_success,
         }
     )
@@ -1626,7 +1686,7 @@ def cache_is_fresh(
     cache: dict[str, Any] | None,
     now: datetime,
     max_age_seconds: int,
-    last_run_at: str | None = None,
+    last_run: str | None = None,
 ) -> bool:
     if not cache:
         return False
@@ -1634,14 +1694,14 @@ def cache_is_fresh(
     return bool(
         checked
         and (now - checked).total_seconds() <= max_age_seconds
-        and handled_run(cache, last_run_at)
+        and handled_run(cache, last_run)
     )
 
 
 # Identity, not clock order: a completed run the cache has not seen yet
 # triggers one refresh even if the clock has since moved backwards.
-def handled_run(cache: dict[str, Any], last_run_at: str | None) -> bool:
-    return cache.get("handledRunAt") == last_run_at
+def handled_run(cache: dict[str, Any], last_run: str | None) -> bool:
+    return cache.get("handledRun") == last_run
 
 
 def repository_from_cache(cache: dict[str, Any], status: str, source: str, error: str = "") -> dict[str, Any]:
@@ -1662,14 +1722,14 @@ def repository_cache_failure(
     status: str,
     error: str,
     now: datetime,
-    last_run_at: str | None = None,
+    last_run: str | None = None,
 ) -> dict[str, Any]:
     updated = dict(cached)
     updated.update({
         "status": status,
         "error": error,
         "lastAttemptAt": isoformat(now),
-        "handledRunAt": last_run_at,
+        "handledRun": last_run,
     })
     try:
         write_cache(path, updated)
@@ -1696,7 +1756,7 @@ def repository_uncached_failure(
     status: str,
     error: str,
     now: datetime,
-    last_run_at: str | None = None,
+    last_run: str | None = None,
 ) -> dict[str, Any]:
     try:
         write_cache(
@@ -1705,7 +1765,7 @@ def repository_uncached_failure(
                 "cacheKey": key,
                 "checkedAt": None,
                 "lastAttemptAt": isoformat(now),
-                "handledRunAt": last_run_at,
+                "handledRun": last_run,
                 "status": status,
                 "error": error,
                 "snapshotCount": 0,
@@ -1733,7 +1793,7 @@ def collect_repository(
     runner: Runner,
     timeout: int,
     now: datetime,
-    last_run_at: str | None = None,
+    last_run: str | None = None,
 ) -> dict[str, Any]:
     key = cache_key(job)
     path = cache_file(cache_dir, config_path, job["id"])
@@ -1741,21 +1801,21 @@ def collect_repository(
         ensure_private_cache_directory(cache_dir, path.parent)
     except OSError as error:
         return repository_uncached_failure(
-            path, key, "unavailable", f"Could not secure plugin cache: {sanitize(error)}", now, last_run_at
+            path, key, "unavailable", f"Could not secure plugin cache: {sanitize(error)}", now, last_run
         )
     cached = load_cache(path, key)
 
     def failure(status: str, message: str, cached_status: str = "stale") -> dict[str, Any]:
         if cached:
-            return repository_cache_failure(path, cached, cached_status, message, now, last_run_at)
-        return repository_uncached_failure(path, key, status, message, now, last_run_at)
+            return repository_cache_failure(path, cached, cached_status, message, now, last_run)
+        return repository_uncached_failure(path, key, status, message, now, last_run)
 
     if active:
         if cached:
             return repository_from_cache(cached, "deferred", "cache", "Refresh deferred while backup is active")
         return repository_none("deferred", "Refresh deferred while backup is active")
 
-    if not force and cache_is_fresh(cached, now, cache_seconds, last_run_at):
+    if not force and cache_is_fresh(cached, now, cache_seconds, last_run):
         return repository_from_cache(
             cached,
             str(cached.get("status") or "ready"),
@@ -1769,7 +1829,7 @@ def collect_repository(
         and cached
         and attempted
         and (now - attempted).total_seconds() <= cache_seconds
-        and handled_run(cached, last_run_at)
+        and handled_run(cached, last_run)
     ):
         return repository_from_cache(
             cached,
@@ -1832,7 +1892,7 @@ def collect_repository(
         "cacheKey": key,
         "checkedAt": checked_at,
         "lastAttemptAt": checked_at,
-        "handledRunAt": last_run_at,
+        "handledRun": last_run,
         "status": "partial" if partial_error else "ready",
         "error": partial_error,
         "snapshotCount": len(snapshots),
@@ -1982,7 +2042,7 @@ def evaluate_job(
         runner=runner,
         timeout=timeout,
         now=now,
-        last_run_at=(service.get("lastRun") or {}).get("finishedAt"),
+        last_run=run_identity(service.get("lastRun")),
     )
     integrity = evaluate_integrity(job, runner, timeout, now)
     issues: list[dict[str, str]] = []

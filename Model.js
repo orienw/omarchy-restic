@@ -243,7 +243,8 @@ function alertIssues(job) {
     var run = null
     if (entry.code === "last-run-failed") run = job.service ? job.service.lastRun : null
     else if (entry.code === "integrity-attention") run = job.integrity ? job.integrity.lastRun : null
-    alerts.push({ key: [job.id, entry.code, run && run.finishedAt ? run.finishedAt : ""].join("|"), issue: entry })
+    var runId = run ? String(run.invocationId || run.finishedAt || "") : ""
+    alerts.push({ key: [job.id, entry.code, runId].join("|"), issue: entry })
   }
   return alerts
 }
