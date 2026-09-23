@@ -143,7 +143,9 @@ Choose **Browse snapshots** on a job, or select the job and press `Enter`. The b
 - `R` or **Restore** restores the selected file or folder. With nothing selected it restores the folder you are in.
 - `Esc` returns to the job list.
 
-Each restore lands in its own folder, such as `~/Restored/Home 2026-09-20 0300/notes.md`. Move files back into place yourself, where you can see what you are replacing. A notification says when the restore is done, and clicking it opens the folder. A running restore can be cancelled and keeps going if you close the panel.
+Each restore lands in its own folder, such as `~/Restored/Home 2026-09-20 0300/notes.md`. Move files back into place yourself, where you can see what you are replacing. A notification says when the restore is done, and clicking it opens the folder. A running restore can be cancelled and keeps going if you close the panel. If the shell restarts or the plugin reloads mid-restore, restic stops cleanly and releases its repository lock, and the partial restore stays in its folder.
+
+Restore waits until the folder's listing for the chosen snapshot has loaded, so it always restores what you see. restic shows filenames that are not valid UTF-8 with a `�`, which can make two different files look identical, so those names cannot be restored one at a time. Restore the folder that contains them instead.
 
 Restore somewhere else with:
 
@@ -153,7 +155,7 @@ omarchy bar set io.github.orienw.restic restoreDirectory '~/Recovered'
 
 ## Notifications
 
-When a job fails, falls overdue, loses its timer, or fails its integrity check, the plugin sends one desktop notification. Clicking it opens the job's journal in a terminal. It notifies again for each new failed run, or when a fixed job breaks again, but not on every refresh while a job stays broken. Restarting the shell notifies about problems that are still open.
+When a job fails, falls overdue, loses its timer, or fails its integrity check, the plugin sends one desktop notification. Clicking it opens the job's journal in a terminal. Each problem notifies on its own, so an open schedule problem never hides a later failed run. It notifies again for each new failed run, or when a fixed job breaks again, but not on every refresh while a job stays broken, and not when systemd briefly fails to answer. Restarting the shell notifies about problems that are still open.
 
 A repository that is temporarily unreachable, such as a NAS while you are away from home, does not notify. It still shows in the bar and panel.
 
