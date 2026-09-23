@@ -230,47 +230,66 @@ class FakeRunner:
 
 
 class RollbackRunner(FakeRunner):
-    """run-1 succeeded at NOW. The clock then stepped back and run-2 failed an
-    hour "earlier" by wall clock, but later by journal order and monotonic time."""
+    """run1 succeeded at NOW. The clock then stepped back an hour and run2
+    failed, so run2 is newer although its wall-clock time is earlier."""
 
-    def __init__(self, *, journal_has_second_run: bool = True, journal_boot: str = "boot1"):
+    def __init__(self, *, latest: str = "run2", journal_runs: tuple[str, ...] = ("run1", "run2"),
+                 current_boot_runs: tuple[str, ...] | None = None, journal_error: bool = False,
+                 systemd_invocation: bool = True):
         super().__init__()
-        self.journal_has_second_run = journal_has_second_run
-        self.journal_boot = journal_boot
+        self.latest = latest
+        self.journal_runs = journal_runs
+        self.current_boot_runs = journal_runs if current_boot_runs is None else current_boot_runs
+        self.journal_error = journal_error
+        self.systemd_invocation = systemd_invocation
 
-    def _history(self):
-        entries = [
-            journal_entry(NOW - timedelta(minutes=2), restic_status.UNIT_STARTING, "Starting backup",
-                          "run1", monotonic_seconds=880, boot=self.journal_boot),
-            journal_entry(NOW, restic_status.UNIT_STARTED, "Backup completed", "run1", result="done",
-                          monotonic_seconds=1000, boot=self.journal_boot),
-        ]
-        if self.journal_has_second_run:
-            entries += [
-                journal_entry(NOW - timedelta(hours=1, minutes=2), restic_status.UNIT_STARTING,
-                              "Starting backup", "run2", monotonic_seconds=4880, boot="boot1"),
-                journal_entry(NOW - timedelta(hours=1), restic_status.UNIT_FAILED, "Backup failed",
-                              "run2", result="failed", monotonic_seconds=5000, boot="boot1"),
-            ]
-        return subprocess.CompletedProcess([], 0, "\n".join(entries) + "\n", "")
+    RUNS = {
+        "run1": (NOW, "success"),
+        "run2": (NOW - timedelta(hours=1), "failed"),
+    }
+
+    def journal_lines(self, runs: tuple[str, ...]) -> str:
+        lines = []
+        for run in runs:
+            finished, result = self.RUNS[run]
+            lines.append(journal_entry(finished - timedelta(minutes=2), restic_status.UNIT_STARTING,
+                                       "Starting backup", run))
+            if result == "success":
+                lines.append(journal_entry(finished, restic_status.UNIT_STARTED, "Backup completed", run, result="done"))
+            else:
+                lines.append(journal_entry(finished, restic_status.UNIT_FAILED, "Backup failed", run, result="failed"))
+        return "\n".join(lines) + "\n"
+
+    def run(self, command: list[str], *, timeout: int, env: dict[str, str] | None = None):
+        if command[0] == "journalctl" and any(argument.startswith("USER_UNIT=") for argument in command):
+            self.calls.append((command, env))
+            if self.journal_error:
+                return subprocess.CompletedProcess(command, 1, "", "Failed to open journal")
+            runs = self.current_boot_runs if "--boot=0" in command else self.journal_runs
+            return subprocess.CompletedProcess(command, 0, self.journal_lines(runs), "")
+        return super().run(command, timeout=timeout, env=env)
 
     def _systemctl(self, command: list[str], unit: str):
         if unit.endswith(".timer"):
             return super()._systemctl(command, unit)
-        failed_at = epoch(NOW - timedelta(hours=1))
+        if self.latest is None:
+            return subprocess.CompletedProcess(command, 0, "\n".join([
+                "LoadState=loaded", "ActiveState=inactive", "SubState=dead", "Result=success",
+                "ExecMainCode=0", "ExecMainStatus=0", "ExecMainStartTimestamp=", "ExecMainExitTimestamp=",
+            ]), "")
+        finished, result = self.RUNS[self.latest]
+        failed = result == "failed"
         return subprocess.CompletedProcess(command, 0, "\n".join([
             "LoadState=loaded",
-            "ActiveState=failed",
-            "SubState=failed",
-            "Result=exit-code",
-            "InvocationID=run2",
+            f"ActiveState={'failed' if failed else 'inactive'}",
+            f"SubState={'failed' if failed else 'dead'}",
+            f"Result={'exit-code' if failed else 'success'}",
+            f"InvocationID={self.latest if self.systemd_invocation else ''}",
             "ExecMainCode=exited",
-            "ExecMainStatus=1",
-            f"ExecMainStartTimestamp=@{failed_at - 120}",
-            f"ExecMainExitTimestamp=@{failed_at}",
-            "ExecMainExitTimestampMonotonic=5000000000",
-            f"StateChangeTimestamp=@{failed_at}",
-            "StateChangeTimestampMonotonic=5000000000",
+            f"ExecMainStatus={1 if failed else 0}",
+            f"ExecMainStartTimestamp=@{epoch(finished) - 120}",
+            f"ExecMainExitTimestamp=@{epoch(finished)}",
+            f"StateChangeTimestamp=@{epoch(finished)}",
         ]), "")
 
 
@@ -959,28 +978,50 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(report["jobs"][0]["repository"]["status"], "stale")
         self.assertFalse(any("snapshots" in command for command, _ in backed_off.calls))
 
-    def rollback_job(self, runner: FakeRunner) -> dict:
-        with patch.object(restic_status, "current_boot_id", return_value="boot1"):
-            return self.collect(runner, now=NOW - timedelta(minutes=55))["jobs"][0]
+    def rollback_job(self, runner: FakeRunner, now: datetime = NOW - timedelta(minutes=55)) -> dict:
+        return self.collect(runner, now=now)["jobs"][0]
 
-    def test_clock_rollback_does_not_hide_a_newer_failed_run(self):
-        for runner in (RollbackRunner(), RollbackRunner(journal_has_second_run=False)):
-            with self.subTest(journal_has_second_run=runner.journal_has_second_run):
-                job = self.rollback_job(runner)
-                self.assertEqual(job["service"]["lastRun"]["result"], "failed")
+    def test_the_units_own_invocation_is_the_latest_run(self):
+        # Journal order, a delayed journal message, or a clock step cannot
+        # make an older invocation win over the one systemd reports.
+        for journal_runs in (("run1", "run2"), ("run2", "run1"), ("run1",)):
+            with self.subTest(journal_runs=journal_runs):
+                job = self.rollback_job(RollbackRunner(journal_runs=journal_runs))
                 self.assertEqual(job["service"]["lastRun"]["invocationId"], "run2")
+                self.assertEqual(job["service"]["lastRun"]["result"], "failed")
                 self.assertEqual(job["status"], "attention")
 
-    def test_this_boots_run_beats_a_journal_run_from_an_earlier_boot(self):
-        job = self.rollback_job(RollbackRunner(journal_has_second_run=False, journal_boot="boot0"))
+    def test_the_current_boot_decides_the_latest_journal_run(self):
+        # Without retained unit state, an older boot's success listed after
+        # this boot's failure must not win.
+        runner = RollbackRunner(latest=None, journal_runs=("run2", "run1"), current_boot_runs=("run2",))
+        job = self.rollback_job(runner)
         self.assertEqual(job["service"]["lastRun"]["invocationId"], "run2")
+        self.assertEqual(job["service"]["lastSuccessAt"], restic_status.isoformat(NOW))
 
-    def test_a_run_after_clock_rollback_refreshes_repository_metadata(self):
-        with patch.object(restic_status, "current_boot_id", return_value="boot1"):
-            self.collect(RollbackRunner(journal_has_second_run=False), now=NOW - timedelta(hours=2))
-        runner = RollbackRunner()
-        self.rollback_job(runner)
-        self.assertTrue(any("snapshots" in command for command, _ in runner.calls))
+    def test_unknown_run_state_is_reported_instead_of_guessed(self):
+        job = self.rollback_job(RollbackRunner(latest=None, journal_error=True))
+        self.assertEqual(job["status"], "unknown")
+        self.assertIn("run-history-unavailable", [issue["code"] for issue in job["issues"]])
+        self.assertEqual(
+            [issue["severity"] for issue in job["issues"] if issue["code"] == "run-history-unavailable"], ["unknown"]
+        )
+
+    def test_a_new_run_after_clock_rollback_refreshes_a_fresh_cache_once(self):
+        self.collect(RollbackRunner(latest="run1", journal_runs=("run1",)), now=NOW)
+        rolled_back = NOW - timedelta(minutes=55)
+
+        same_run = RollbackRunner(latest="run1", journal_runs=("run1",))
+        self.collect(same_run, now=rolled_back)
+        self.assertFalse(any("snapshots" in command for command, _ in same_run.calls))
+
+        new_run = RollbackRunner()
+        self.collect(new_run, now=rolled_back)
+        self.assertTrue(any("snapshots" in command for command, _ in new_run.calls))
+
+        settled = RollbackRunner()
+        self.collect(settled, now=rolled_back + timedelta(minutes=1))
+        self.assertFalse(any("snapshots" in command for command, _ in settled.calls))
 
     def test_clock_rollback_after_a_run_refreshes_once_then_caches(self):
         self.collect(FakeRunner())

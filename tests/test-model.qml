@@ -256,6 +256,14 @@ ShellRoot {
         root.fail("a retry in progress changed the alert for the run it is replacing")
         return
       }
+      var historyGap = alertsFor(first.known, [{ id: "home", name: "Home", status: "unknown",
+        service: { unit: "restic-home.service", lastRun: null },
+        issues: [{ code: "run-history-unavailable", message: "Run history is unavailable", severity: "unknown" }] }])
+      if (Object.keys(historyGap.known).length !== 1
+          || alertsFor(historyGap.known, [failedJob("2026-08-17T11:00:00Z")]).notices.length !== 0) {
+        root.fail("an unreadable run history cleared an unresolved failure alert")
+        return
+      }
       var recovered = alertsFor(timerAlert.known, [{ id: "home", status: "healthy", issues: [] }])
       if (Object.keys(recovered.known).length !== 0) {
         root.fail("a verified recovery did not clear the alert")

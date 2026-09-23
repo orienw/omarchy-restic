@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-import functools
 import hashlib
 import json
 import os
@@ -1129,9 +1128,7 @@ def service_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
             "ExecMainStatus",
             "ExecMainStartTimestamp",
             "ExecMainExitTimestamp",
-            "ExecMainExitTimestampMonotonic",
             "StateChangeTimestamp",
-            "StateChangeTimestampMonotonic",
             "InvocationID",
         ],
         runner,
@@ -1162,9 +1159,7 @@ def service_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
         "exitStatus": exit_status,
         "startedAt": iso_from_systemd_timestamp(props.get("ExecMainStartTimestamp")),
         "finishedAt": iso_from_systemd_timestamp(props.get("ExecMainExitTimestamp")),
-        "finishedMonotonic": microseconds(props.get("ExecMainExitTimestampMonotonic")),
         "stateChangedAt": iso_from_systemd_timestamp(props.get("StateChangeTimestamp")),
-        "stateChangedMonotonic": microseconds(props.get("StateChangeTimestampMonotonic")),
         "invocationId": props.get("InvocationID", ""),
         "active": active_state in {"active", "activating", "reloading"},
     }
@@ -1245,25 +1240,9 @@ def parse_journal_lines(output: str) -> list[dict[str, Any]]:
     return entries
 
 
-def microseconds(value: Any) -> int | None:
-    try:
-        result = int(str(value))
-    except (TypeError, ValueError):
-        return None
-    return result if result > 0 else None
-
-
-@functools.cache
-def current_boot_id() -> str:
-    try:
-        return Path("/proc/sys/kernel/random/boot_id").read_text().strip().replace("-", "")
-    except OSError:
-        return ""
-
-
-# Runs are ordered by the journal, which follows monotonic time within a
-# boot, rather than by wall clock, so a clock stepped backwards cannot make
-# a newer run look older.
+# Runs keep the journal's order rather than their wall-clock times, so a
+# clock stepped backwards cannot make a newer run look older. Within one
+# boot the journal records a unit's runs in the order systemd reported them.
 def parse_journal_runs(output: str) -> list[dict[str, Any]]:
     invocations: dict[str, dict[str, Any]] = {}
     completions: dict[str, dict[str, Any]] = {}
@@ -1304,21 +1283,22 @@ def parse_journal_runs(output: str) -> list[dict[str, Any]]:
             invocation["durationSec"] = elapsed_seconds(
                 invocation.get("startedAt"), timestamp
             )
-            completions[invocation_id] = dict(
-                invocation,
-                _order=order,
-                _monotonic=microseconds(entry.get("__MONOTONIC_TIMESTAMP")),
-                _boot=str(entry.get("_BOOT_ID") or ""),
-            )
+            completions[invocation_id] = dict(invocation, order=order)
 
-    return sorted(completions.values(), key=lambda run: run["_order"])
+    runs = sorted(completions.values(), key=lambda run: run["order"])
+    for run in runs:
+        del run["order"]
+    return runs
 
 
-def journal_history(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
+def journal_runs(
+    unit: str, runner: Runner, timeout: int, boot: list[str]
+) -> tuple[list[dict[str, Any]] | None, str]:
     command = [
         "journalctl",
         "--user",
         f"USER_UNIT={unit}",
+        *boot,
         "--no-pager",
         "--output=json",
         "--lines=80",
@@ -1326,25 +1306,29 @@ def journal_history(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
     try:
         result = runner.run(command, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as error:
-        return {
-            "available": False,
-            "lastRun": None,
-            "lastSuccessAt": None,
-            "error": sanitize(error),
-        }
+        return None, sanitize(error)
     if result.returncode != 0:
-        return {
-            "available": False,
-            "lastRun": None,
-            "lastSuccessAt": None,
-            "error": sanitize(result.stderr or result.stdout),
-        }
+        return None, sanitize(result.stderr or result.stdout)
+    return parse_journal_runs(result.stdout), ""
 
-    completed = parse_journal_runs(result.stdout)
-    successful = [run for run in completed if run.get("result") == "success"]
+
+# The current boot decides the latest run: when boots' clocks disagree,
+# journalctl can list an older boot's entries after this one's. Older boots
+# are read only when this boot has no run or no success yet.
+def journal_history(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
+    current, error = journal_runs(unit, runner, timeout, ["--boot=0"])
+    runs = current or []
+    successful = [run for run in runs if run.get("result") == "success"]
+    if not runs or not successful:
+        earlier, earlier_error = journal_runs(unit, runner, timeout, [])
+        if current is None and earlier is None:
+            return {"available": False, "lastRun": None, "lastSuccessAt": None, "error": error or earlier_error}
+        earlier = earlier or []
+        runs = runs or earlier
+        successful = successful or [run for run in earlier if run.get("result") == "success"]
     return {
         "available": True,
-        "lastRun": completed[-1] if completed else None,
+        "lastRun": runs[-1] if runs else None,
         "lastSuccessAt": successful[-1]["finishedAt"] if successful else None,
         "error": "",
     }
@@ -1376,9 +1360,6 @@ def fallback_run_from_systemd(state: dict[str, Any]) -> dict[str, Any] | None:
             message = f"Last run exited with status {exit_status}"
         else:
             message = "Service result: failed"
-        monotonic = state.get("finishedMonotonic")
-        if finished and finished == state.get("stateChangedAt"):
-            monotonic = state.get("stateChangedMonotonic")
         return {
             "invocationId": state.get("invocationId", ""),
             "startedAt": state.get("startedAt"),
@@ -1386,7 +1367,6 @@ def fallback_run_from_systemd(state: dict[str, Any]) -> dict[str, Any] | None:
             "durationSec": elapsed_seconds(state.get("startedAt"), finished),
             "result": "failed",
             "message": message,
-            "_monotonic": monotonic,
         }
 
     if not finished:
@@ -1398,34 +1378,26 @@ def fallback_run_from_systemd(state: dict[str, Any]) -> dict[str, Any] | None:
         "durationSec": elapsed_seconds(state.get("startedAt"), finished),
         "result": "success",
         "message": "Completed successfully",
-        "_monotonic": state.get("finishedMonotonic"),
     }
 
 
-# The unit's own state always describes a run from this boot. Within a boot,
-# monotonic time orders runs even across wall-clock steps; wall clock is the
-# fallback when either side lacks it. A failure wins for the same run or a tie.
+# The unit's own state names its latest invocation, so when systemd reports an
+# invocation id it wins over any other journal run, whatever the clocks say.
+# The journal adds its message when both describe the same run. Wall clock is
+# only the fallback when systemd gives no id; a failure wins the same run or a tie.
 def later_run(journal: dict[str, Any] | None, systemd: dict[str, Any] | None) -> dict[str, Any] | None:
     if not journal or not systemd:
         return journal or systemd
     if not systemd.get("finishedAt"):
         return systemd
-    same = journal.get("invocationId") and journal["invocationId"] == systemd.get("invocationId")
-    if not same:
-        if journal.get("_boot") and journal["_boot"] != current_boot_id():
+    if systemd.get("invocationId"):
+        if journal.get("invocationId") != systemd["invocationId"]:
             return systemd
-        journal_time, systemd_time = journal.get("_monotonic"), systemd.get("_monotonic")
-        if journal_time is None or systemd_time is None:
-            journal_time, systemd_time = journal.get("finishedAt") or "", systemd["finishedAt"]
-        if journal_time != systemd_time:
-            return journal if journal_time > systemd_time else systemd
+    elif (journal.get("finishedAt") or "") != systemd["finishedAt"]:
+        return max(journal, systemd, key=lambda run: run.get("finishedAt") or "")
     if systemd.get("result") == "failed" and journal.get("result") != "failed":
         return systemd
     return journal
-
-
-def public_run(run: dict[str, Any] | None) -> dict[str, Any] | None:
-    return {key: value for key, value in run.items() if not key.startswith("_")} if run else None
 
 
 def run_identity(run: dict[str, Any] | None) -> str | None:
@@ -1439,13 +1411,11 @@ def collect_unit(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
     last_success = history.get("lastSuccessAt")
     if last_run and last_run.get("result") == "success":
         last_success = last_run.get("finishedAt") or last_success
-    for key in ("finishedMonotonic", "stateChangedMonotonic"):
-        state.pop(key, None)
     state.update(
         {
             "historyAvailable": history.get("available", False),
             "historyError": history.get("error", ""),
-            "lastRun": public_run(last_run),
+            "lastRun": last_run,
             "lastSuccessAt": last_success,
         }
     )
@@ -2051,6 +2021,8 @@ def evaluate_job(
         issues.append(issue("service-not-loaded", f"Service is {service.get('loadState', 'not loaded')}", "critical"))
     elif not service.get("available"):
         issues.append(issue("service-unavailable", "Systemd service status is unavailable", "unknown"))
+    elif not service.get("historyAvailable") and not service.get("lastRun") and not service.get("active"):
+        issues.append(issue("run-history-unavailable", "Run history is unavailable", "unknown"))
 
     if timer.get("available"):
         if timer.get("loadState") != "loaded":
