@@ -168,8 +168,11 @@ omarchy bar set io.github.orienw.restic notifications false --json
 
 ## Update
 
+Update the plugin and restart the shell so every part of it reloads:
+
 ```bash
 omarchy plugin update io.github.orienw.restic
+omarchy restart shell
 ```
 
 ## Remove
