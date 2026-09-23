@@ -1179,7 +1179,7 @@ class ResticStatusTest(unittest.TestCase):
                     if not detached:
                         try:
                             state = Path(f"/proc/{child_pid}/stat").read_text().split(") ", 1)[1].split()[0]
-                        except FileNotFoundError:
+                        except (FileNotFoundError, ProcessLookupError):
                             state = None
                         self.assertIn(state, (None, "Z"))
                 finally:
