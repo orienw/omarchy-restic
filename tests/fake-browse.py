@@ -3,7 +3,11 @@ import sys
 
 command = sys.argv[1]
 options = dict(argument.split("=", 1) for argument in sys.argv[2:])
-if command == "snapshots":
+if command == "snapshots" and options["--job"] == "single":
+    print(json.dumps({"type": "snapshots", "snapshots": [
+        {"id": "c" * 64, "shortId": "cccccccc", "time": "2026-08-17T03:30:00Z", "paths": ["/home/test/config.toml"]},
+    ]}))
+elif command == "snapshots":
     print(json.dumps({"type": "snapshots", "snapshots": [
         {"id": "b" * 64, "shortId": "bbbbbbbb", "time": "2026-08-17T03:30:00Z", "paths": ["/home/test"]},
         {"id": "a" * 64, "shortId": "aaaaaaaa", "time": "2026-08-16T03:30:00Z", "paths": ["/home/test"]},
@@ -21,6 +25,13 @@ elif options["--path"] in ("/home/test/Empty", "/home/test/Gone", "/home/test/co
     kind = {"/home/test/Empty": "dir", "/home/test/Gone": "missing", "/home/test/config.toml": "file"}[options["--path"]]
     print(json.dumps({"type": "entries", "path": options["--path"], "truncated": False, "entries": [],
                       "exists": kind == "dir", "kind": kind}))
+elif options["--path"] == "/home/test/Swap":
+    if options["--snapshot"] == "a" * 64:
+        print(json.dumps({"type": "entries", "path": "/home/test/Swap", "truncated": False, "entries": [],
+                          "exists": False, "kind": "symlink"}))
+    else:
+        print(json.dumps({"type": "entries", "path": "/home/test/Swap", "truncated": False, "exists": True, "kind": "dir",
+                          "entries": [{"name": "inside.txt", "type": "file", "path": "/home/test/Swap/inside.txt", "size": 5}]}))
 elif options["--path"] == "/home/test/Long":
     print(json.dumps({"type": "entries", "path": "/home/test/Long", "truncated": False, "exists": True, "kind": "dir",
                       "entries": [{"name": "quarterly-report-2026-final-version-reviewed-by-legal.pdf", "type": "file",

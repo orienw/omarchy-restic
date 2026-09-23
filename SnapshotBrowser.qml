@@ -34,6 +34,7 @@ Item {
   property var listings: ({})
   property int session: 0
   property string shownKey: ""
+  property bool openingRoot: false
 
   property var _active: null
   property var _pending: null
@@ -123,6 +124,7 @@ Item {
     if (item.kind === "snapshots") {
       snapshots = Array.isArray(result.snapshots) ? result.snapshots : []
       snapshotIndex = 0
+      openingRoot = true
       if (snapshot) navigate(Model.browseRoot(snapshot), "")
     } else {
       listings[item.key] = result
@@ -136,7 +138,11 @@ Item {
 
   function show(listing) {
     // A snapshot of a single file starts at the file: open its folder instead.
-    if (listing.kind && listing.kind !== "dir" && listing.kind !== "missing") {
+    // Only when opening; elsewhere a path that is not a folder is simply not
+    // in this snapshot, and the selection stays as it was.
+    var opening = openingRoot
+    openingRoot = false
+    if (opening && listing.kind && listing.kind !== "dir" && listing.kind !== "missing") {
       navigate(Model.parentPath(path), Model.baseName(path))
       return
     }

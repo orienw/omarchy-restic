@@ -177,15 +177,41 @@ ShellRoot {
           root.fail("the current listing's own error was not shown")
           return
         }
-        browser.switchSnapshot(-1)
-        browser.navigate("/home/test/config.toml", "")
+        browser.open({ id: "single", name: "Single file" })
         root.stage = 6
         return
       }
 
       if (root.stage === 6) {
+        if (!browser.listingReady) return
         if (browser.path !== "/home/test" || !browser.selectedEntry || browser.selectedEntry.name !== "config.toml") {
-          root.fail("a file path did not open its folder with the file selected: " + browser.path)
+          root.fail("a single-file snapshot did not open at its folder with the file selected: " + browser.path)
+          return
+        }
+        browser.open({ id: "home", name: "Home" })
+        root.stage = 61
+        return
+      }
+
+      if (root.stage === 61) {
+        if (!browser.listingReady) return
+        browser.navigate("/home/test/Swap", "")
+        root.stage = 7
+        return
+      }
+
+      if (root.stage === 7) {
+        browser.moveSelection(1)
+        browser.switchSnapshot(1)
+        root.stage = 71
+        return
+      }
+
+      if (root.stage === 71) {
+        if (browser.path !== "/home/test/Swap" || browser.selectedName !== "inside.txt"
+            || browser.restoreTarget !== null || browser.folderRestorable) {
+          root.fail("a folder that is a symlink in another snapshot redirected the selection: "
+            + browser.path + " " + browser.selectedName)
           return
         }
         root.stage = 8
