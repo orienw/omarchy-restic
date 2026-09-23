@@ -192,11 +192,11 @@ class ResticBrowseTest(unittest.TestCase):
             node("/home/test/beta.txt"),
         ]))
 
-        entries, truncated, exists = restic_browse.list_directory(["restic"], SNAPSHOT, "/home/test", runner, 30)
+        entries, truncated, kind = restic_browse.list_directory(["restic"], SNAPSHOT, "/home/test", runner, 30)
 
         self.assertEqual([entry["name"] for entry in entries], ["Alpha", "beta.txt", "zeta.txt"])
         self.assertFalse(truncated)
-        self.assertTrue(exists)
+        self.assertEqual(kind, "dir")
         self.assertEqual(runner.calls[0][-3:], ["ls", SNAPSHOT, "/home/test"])
 
     def test_directory_listing_tells_an_empty_folder_from_a_missing_one(self):
@@ -204,13 +204,17 @@ class ResticBrowseTest(unittest.TestCase):
         empty = ListRunner("\n".join([snapshot_line, node("/home/test/Empty", "dir", None)]))
         missing = ListRunner(snapshot_line)
 
+        single = ListRunner("\n".join([snapshot_line, node("/home/test/config.toml")]))
         self.assertEqual(
-            restic_browse.list_directory(["restic"], SNAPSHOT, "/home/test/Empty", empty, 30), ([], False, True)
+            restic_browse.list_directory(["restic"], SNAPSHOT, "/home/test/Empty", empty, 30), ([], False, "dir")
         )
         self.assertEqual(
-            restic_browse.list_directory(["restic"], SNAPSHOT, "/home/test/Gone", missing, 30), ([], False, False)
+            restic_browse.list_directory(["restic"], SNAPSHOT, "/home/test/Gone", missing, 30), ([], False, "missing")
         )
-        self.assertTrue(restic_browse.list_directory(["restic"], SNAPSHOT, "/", missing, 30)[2])
+        self.assertEqual(
+            restic_browse.list_directory(["restic"], SNAPSHOT, "/home/test/config.toml", single, 30), ([], False, "file")
+        )
+        self.assertEqual(restic_browse.list_directory(["restic"], SNAPSHOT, "/", missing, 30)[2], "dir")
 
     def test_snapshots_are_newest_first_and_filtered_by_tag(self):
         runner = ListRunner(json.dumps([
@@ -322,6 +326,36 @@ class ResticBrowseTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("restic"), "restic is not installed")
 class ResticRoundTripTest(unittest.TestCase):
+    def test_a_single_file_snapshot_lists_as_a_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "config.toml").write_text("setting = 1")
+            (root / "repository").write_text(str(root / "repo"))
+            (root / "password").write_text("secret")
+            config = root / "jobs.json"
+            config.write_text(json.dumps({"schemaVersion": 1, "jobs": [{
+                "id": "one", "name": "One", "service": "one.service", "timer": "one.timer",
+                "repositoryFile": str(root / "repository"), "passwordFile": str(root / "password"),
+            }]}))
+            restic = ["restic", "-q", "--repository-file", str(root / "repository"),
+                      "--password-file", str(root / "password"), "--cache-dir", str(root / "restic-cache")]
+            subprocess.run(restic + ["init"], check=True, capture_output=True)
+            subprocess.run(restic + ["backup", str(root / "config.toml")], check=True, capture_output=True)
+
+            def browse(*args: str) -> dict:
+                output = subprocess.run(
+                    [sys.executable, str(PROJECT_DIR / "scripts" / "restic_browse.py"), *args,
+                     "--config", str(config), "--cache-dir", str(root / "cache"), "--job", "one"],
+                    capture_output=True, text=True, timeout=60, check=True,
+                )
+                return json.loads(output.stdout.splitlines()[-1])
+
+            snapshot = browse("snapshots")["snapshots"][0]
+            self.assertEqual(snapshot["paths"], [str(root / "config.toml")])
+            listing = browse("ls", "--snapshot", snapshot["id"], "--path", str(root / "config.toml"))
+            self.assertEqual(listing["kind"], "file")
+            self.assertFalse(listing["exists"])
+
     def test_names_restic_cannot_show_exactly_are_never_restored(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

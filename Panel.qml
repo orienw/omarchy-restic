@@ -309,16 +309,19 @@ Panel {
                   spacing: Style.space(8)
 
                   Text {
+                    id: jobName
                     textFormat: Text.PlainText
+                    width: Math.min(implicitWidth, parent.width - statusText.implicitWidth - parent.spacing * 2)
                     text: String(jobCard.job.name || jobCard.job.id || "Restic job")
                     color: root.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.subtitle
                     font.bold: true
+                    elide: Text.ElideRight
                   }
 
                   Item {
-                    width: Math.max(0, parent.width - parent.children[0].implicitWidth - statusText.implicitWidth - parent.spacing * 2)
+                    width: Math.max(0, parent.width - jobName.width - statusText.implicitWidth - parent.spacing * 2)
                     height: 1
                   }
 

@@ -135,6 +135,11 @@ Item {
   }
 
   function show(listing) {
+    // A snapshot of a single file starts at the file: open its folder instead.
+    if (listing.kind && listing.kind !== "dir" && listing.kind !== "missing") {
+      navigate(Model.parentPath(path), Model.baseName(path))
+      return
+    }
     error = ""
     shownKey = listingKey(path)
     entries = Array.isArray(listing.entries) ? listing.entries : []
@@ -430,12 +435,24 @@ Item {
       width: parent.width
       spacing: Style.space(8)
 
+      // The kit's Button does not elide, and an overflowing file name would
+      // spill over the folder button next to it.
+      TextMetrics {
+        id: restoreMetrics
+        font.family: root.fontFamily
+        font.pixelSize: restoreButton.fontSize
+        elide: Qt.ElideMiddle
+        elideWidth: Math.max(0, restoreButton.width - restoreButton.horizontalPadding * 2
+          - restoreButton.iconSize - Style.spacing.controlGap - Style.space(8))
+        text: root.restoreLabel()
+      }
+
       Button {
         id: restoreButton
         objectName: "restoreButton"
         width: parent.width - folderButton.width - parent.spacing
           - (cancelButton.visible ? cancelButton.width + parent.spacing : 0)
-        text: root.restoreLabel()
+        text: restoreMetrics.elidedText
         iconText: "󰦛"
         iconSpinning: root.restoring
         foreground: root.foreground

@@ -43,6 +43,17 @@ ShellRoot {
     return null
   }
 
+  function findText(parent, text) {
+    if (!parent) return null
+    if (parent !== undefined && typeof parent.text === "string" && parent.text === text && "implicitWidth" in parent
+        && parent.textFormat !== undefined) return parent
+    for (var i = 0; parent.children && i < parent.children.length; i++) {
+      var match = findText(parent.children[i], text)
+      if (match) return match
+    }
+    return null
+  }
+
   function literalTextCount(parent) {
     if (!parent) return 0
     var count = 0
@@ -415,6 +426,27 @@ ShellRoot {
           root.fail("going up did not return to the parent with the folder selected")
           return
         }
+        browser.navigate("/home/test/Long", "")
+        root.stage = 491
+        return
+      }
+
+      if (root.stage === 491) {
+        if (!browser.listingReady) return
+        browser.moveSelection(1)
+        root.stage = 492
+        return
+      }
+
+      if (root.stage === 492) {
+        var restoreButton = root.findByName(browser, "restoreButton")
+        var label = restoreButton ? root.findText(restoreButton, restoreButton.text) : null
+        var labelEnd = label ? label.mapToItem(restoreButton, label.implicitWidth, 0).x : Infinity
+        if (!label || labelEnd > restoreButton.width) {
+          root.fail("a long file name overflowed the restore button onto its neighbor: "
+            + labelEnd + " > " + (restoreButton ? restoreButton.width : "missing"))
+          return
+        }
         events.keyClick(Qt.Key_Escape, Qt.NoModifier, -1)
         if (livePanel.browsingJob || !widget.opened) {
           root.fail("Escape in the browser did not return to the job list")
@@ -480,9 +512,9 @@ ShellRoot {
   }
 
   Timer {
-    interval: 15000
+    interval: 30000
     running: true
     repeat: false
-    onTriggered: if (!root.finished) root.fail("UI smoke test timed out")
+    onTriggered: if (!root.finished) root.fail("UI smoke test timed out at stage " + root.stage)
   }
 }

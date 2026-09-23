@@ -141,11 +141,11 @@ def list_snapshots(
 
 def list_directory(
     base: list[str], snapshot: str, path: str, runner: status.Runner, timeout: int
-) -> tuple[list[dict[str, Any]], bool, bool]:
+) -> tuple[list[dict[str, Any]], bool, str]:
     entries = []
-    # restic lists a folder's own node, which tells an empty folder from one
-    # the snapshot does not contain.
-    exists = path == "/"
+    # restic lists the path's own node, which tells an empty folder from one the
+    # snapshot does not contain, and a folder from a backed-up single file.
+    kind = "dir" if path == "/" else "missing"
     for line in run_restic(runner, base + ["ls", snapshot, path], timeout).split("\n"):
         try:
             node = json.loads(line)
@@ -155,11 +155,11 @@ def list_directory(
             continue
         node_path = str(node.get("path") or "")
         if node_path == path:
-            exists = node.get("type") == "dir"
+            kind = str(node.get("type") or "file")
             continue
         if str(PurePosixPath(node_path).parent) != path:
             continue
-        exists = True
+        kind = "dir"
         entries.append({
             "name": str(node.get("name") or PurePosixPath(node_path).name),
             "type": str(node.get("type") or "file"),
@@ -168,7 +168,7 @@ def list_directory(
             "mtime": node.get("mtime"),
         })
     entries.sort(key=lambda entry: (entry["type"] != "dir", entry["name"].casefold()))
-    return entries[:MAX_ENTRIES], len(entries) > MAX_ENTRIES, exists
+    return entries[:MAX_ENTRIES], len(entries) > MAX_ENTRIES, kind
 
 
 def escape_pattern(name: str) -> str:
@@ -342,10 +342,13 @@ def main(argv: list[str] | None = None) -> int:
             emit({"type": "snapshots", "snapshots": list_snapshots(job, base, runner, args.timeout_seconds)})
         elif args.command == "ls":
             path = snapshot_path(args.path)
-            entries, truncated, exists = list_directory(
+            entries, truncated, kind = list_directory(
                 base, snapshot_id(args.snapshot), path, runner, args.timeout_seconds
             )
-            emit({"type": "entries", "path": path, "entries": entries, "truncated": truncated, "exists": exists})
+            emit({
+                "type": "entries", "path": path, "entries": entries, "truncated": truncated,
+                "exists": kind == "dir", "kind": kind,
+            })
         else:
             path = snapshot_path(args.path)
             if path == "/":

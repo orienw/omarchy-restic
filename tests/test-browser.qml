@@ -55,7 +55,7 @@ ShellRoot {
       if (!browser || browser.loading) return
 
       if (root.stage === 0) {
-        if (browser.path !== "/home/test" || browser.entries.length !== 3) return
+        if (browser.path !== "/home/test" || browser.entries.length !== 4) return
         browser.navigate("/home/test/Documents", "")
         root.stage = 1
         return
@@ -172,10 +172,26 @@ ShellRoot {
         return
       }
 
-      if (browser.error.indexOf("not found") === -1) {
-        root.fail("the current listing's own error was not shown")
+      if (root.stage === 5) {
+        if (browser.error.indexOf("not found") === -1) {
+          root.fail("the current listing's own error was not shown")
+          return
+        }
+        browser.switchSnapshot(-1)
+        browser.navigate("/home/test/config.toml", "")
+        root.stage = 6
         return
       }
+
+      if (root.stage === 6) {
+        if (browser.path !== "/home/test" || !browser.selectedEntry || browser.selectedEntry.name !== "config.toml") {
+          root.fail("a file path did not open its folder with the file selected: " + browser.path)
+          return
+        }
+        root.stage = 8
+        return
+      }
+
       console.log("browser tests passed")
       root.finished = true
       stop()
