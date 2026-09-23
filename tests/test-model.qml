@@ -207,6 +207,10 @@ ShellRoot {
         root.fail("path helpers split paths incorrectly")
         return
       }
+      if (!Model.exactPath("/home/test/notes.md") || Model.exactPath("/home/test/name-\ufffd")) {
+        root.fail("lossy restic paths were treated as exact")
+        return
+      }
       if (Model.tildePath("/home/test/Restored/a", "/home/test") !== "~/Restored/a"
           || Model.tildePath("/home/tester/a", "/home/test") !== "/home/tester/a"
           || Model.tildePath("/etc/a", "/") !== "/etc/a") {

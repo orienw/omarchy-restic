@@ -245,6 +245,12 @@ function parentPath(path) {
   return index <= 0 ? "/" : value.substring(0, index)
 }
 
+// Undecodable filename bytes arrive from restic as U+FFFD, so the path may
+// name a different file than the one shown.
+function exactPath(path) {
+  return String(path || "").indexOf("\ufffd") === -1
+}
+
 function baseName(path) {
   var value = String(path || "")
   return value.substring(value.lastIndexOf("/") + 1)

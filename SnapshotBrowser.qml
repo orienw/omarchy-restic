@@ -41,9 +41,10 @@ Item {
   readonly property var selectedEntry: selectedIndex >= 0 && selectedIndex < entries.length
     ? entries[selectedIndex]
     : null
-  readonly property var restoreTarget: selectedEntry
+  readonly property var candidate: selectedEntry
     ? selectedEntry
     : (path !== "/" ? { name: Model.baseName(path), path: path, type: "dir" } : null)
+  readonly property var restoreTarget: candidate && Model.exactPath(candidate.path) ? candidate : null
   readonly property bool restoring: !!service && service.restoreState === "running"
 
   signal closeRequested()
@@ -186,6 +187,7 @@ Item {
       var percent = service.restorePercent >= 0 ? " " + Math.round(service.restorePercent * 100) + "%" : ""
       return "Restoring " + service.restoreName + "..." + percent
     }
+    if (candidate && !restoreTarget) return "Restore the folder that contains it"
     return restoreTarget && selectedEntry ? "Restore " + restoreTarget.name : "Restore this folder"
   }
 

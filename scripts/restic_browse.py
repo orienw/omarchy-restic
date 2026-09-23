@@ -103,6 +103,10 @@ def snapshot_path(value: str) -> str:
         or str(path) != value
     ):
         raise BrowseError("Invalid snapshot path")
+    # restic's JSON replaces undecodable filename bytes with U+FFFD, so two
+    # different names can arrive as the same path.
+    if "\ufffd" in value:
+        raise BrowseError("restic cannot show this name exactly. Restore the folder that contains it instead.")
     return value
 
 

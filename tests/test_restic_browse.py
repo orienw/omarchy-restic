@@ -157,7 +157,7 @@ class ResticBrowseTest(unittest.TestCase):
         self.assertFalse(label.startswith("."))
 
     def test_invalid_snapshots_and_paths_are_rejected(self):
-        for value in ("relative", "/home/../etc", "/home/", "/home\0x", "//home"):
+        for value in ("relative", "/home/../etc", "/home/", "/home\0x", "//home", "/home/name-\ufffd"):
             with self.subTest(path=value), self.assertRaises(restic_browse.BrowseError):
                 restic_browse.snapshot_path(value)
         for value in ("abc", "latest", "A" * 64, "a" * 63):
@@ -280,6 +280,43 @@ class ResticBrowseTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("restic"), "restic is not installed")
 class ResticRoundTripTest(unittest.TestCase):
+    def test_names_restic_cannot_show_exactly_are_never_restored(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            with open(os.fsencode(source) + b"/name-\xff", "wb") as raw:
+                raw.write(b"raw bytes")
+            (source / "name-\ufffd").write_text("unicode")
+            (root / "repository").write_text(str(root / "repo"))
+            (root / "password").write_text("secret")
+            config = root / "jobs.json"
+            config.write_text(json.dumps({"schemaVersion": 1, "jobs": [{
+                "id": "odd", "name": "Odd", "service": "odd.service", "timer": "odd.timer",
+                "repositoryFile": str(root / "repository"), "passwordFile": str(root / "password"),
+            }]}))
+            restic = ["restic", "-q", "--repository-file", str(root / "repository"),
+                      "--password-file", str(root / "password"), "--cache-dir", str(root / "restic-cache")]
+            subprocess.run(restic + ["init"], check=True, capture_output=True)
+            subprocess.run(restic + ["backup", str(source)], check=True, capture_output=True)
+
+            def browse(*args: str) -> dict:
+                output = subprocess.run(
+                    [sys.executable, str(PROJECT_DIR / "scripts" / "restic_browse.py"), *args,
+                     "--config", str(config), "--cache-dir", str(root / "cache"), "--job", "odd"],
+                    capture_output=True, text=True, timeout=60, check=True,
+                )
+                return json.loads(output.stdout.splitlines()[-1])
+
+            snapshot = browse("snapshots")["snapshots"][0]["id"]
+            names = [entry["name"] for entry in browse("ls", "--snapshot", snapshot, "--path", str(source))["entries"]]
+            self.assertEqual(names.count("name-\ufffd"), 2)
+
+            restored = browse("restore", "--snapshot", snapshot, "--path", str(source / "name-\ufffd"),
+                              "--type", "file", "--target-root", str(root / "Restored"))
+            self.assertEqual(restored["type"], "error")
+            self.assertFalse((root / "Restored").exists() and any((root / "Restored").iterdir()))
+
     def test_killed_restore_releases_the_repository_lock(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
