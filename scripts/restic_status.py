@@ -1260,23 +1260,47 @@ def journal_history(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
 def fallback_run_from_systemd(state: dict[str, Any]) -> dict[str, Any] | None:
     if not state.get("available") or state.get("active"):
         return None
+
+    result = str(state.get("result") or "")
+    exit_status = state.get("exitStatus", 0)
     successful = (
         state.get("activeState") != "failed"
-        and state.get("result") in {"", "success"}
-        and state.get("exitStatus", 0) == 0
+        and result in {"", "success"}
+        and exit_status == 0
     )
     finished = state.get("finishedAt")
     if not successful:
-        finished = max(finished or "", state.get("stateChangedAt") or "") or None
-    if not finished and successful:
+        # StateChangeTimestamp dates a failure only while the unit is still
+        # failed. After `systemctl reset-failed` the state change is the reset
+        # itself, so the failed invocation's own timestamps stay authoritative.
+        if state.get("activeState") == "failed":
+            finished = max(finished or "", state.get("stateChangedAt") or "") or None
+        elif not finished:
+            return None
+        if result not in {"", "success"}:
+            message = f"Service result: {result}"
+        elif exit_status != 0:
+            message = f"Last run exited with status {exit_status}"
+        else:
+            message = "Service result: failed"
+        return {
+            "invocationId": "",
+            "startedAt": state.get("startedAt"),
+            "finishedAt": finished,
+            "durationSec": elapsed_seconds(state.get("startedAt"), finished),
+            "result": "failed",
+            "message": message,
+        }
+
+    if not finished:
         return None
     return {
         "invocationId": "",
         "startedAt": state.get("startedAt"),
         "finishedAt": finished,
         "durationSec": elapsed_seconds(state.get("startedAt"), finished),
-        "result": "success" if successful else "failed",
-        "message": "Completed successfully" if successful else f"Service result: {state.get('result') or 'failed'}",
+        "result": "success",
+        "message": "Completed successfully",
     }
 
 
