@@ -11,6 +11,8 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
@@ -20,6 +22,7 @@ import restic_status as status
 
 SNAPSHOT_ID = re.compile(r"[0-9a-f]{64}")
 MAX_ENTRIES = 5000
+CANCEL_GRACE_SECONDS = 10
 RESTIC_EXIT_ERRORS = {
     10: "Repository not found",
     11: "Repository is locked by another operation",
@@ -211,36 +214,63 @@ def restore(
 
     env = status.restic_environment()
     env["RESTIC_PROGRESS_FPS"] = "1"
-    cancelled = False
     output: list[str] = []
     summary: dict[str, Any] = {}
-    with subprocess.Popen(
-        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env
-    ) as process:
+
+    def handle(raw: bytes) -> None:
+        nonlocal summary
+        line = raw.decode("utf-8", errors="replace")
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            output.append(line + "\n")
+            return
+        if not isinstance(message, dict):
+            return
+        if message.get("message_type") == "status" and "percent_done" in message:
+            emit({"type": "progress", "percent": message["percent_done"]})
+        elif message.get("message_type") == "summary":
+            summary = message
+        else:
+            output.append(line + "\n")
+
+    cancelled_at: float | None = None
+    with tempfile.TemporaryFile() as log:
+        process = status.spawn(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+
         def cancel(signum: int, frame: Any) -> None:
-            nonlocal cancelled
-            cancelled = True
-            process.terminate()
+            nonlocal cancelled_at
+            if cancelled_at is None:
+                cancelled_at = time.monotonic()
+                status.signal_group(process, signal.SIGTERM)
 
         previous = signal.signal(signal.SIGTERM, cancel)
         try:
-            for line in process.stdout:
-                try:
-                    message = json.loads(line)
-                except json.JSONDecodeError:
-                    output.append(line)
+            offset = 0
+            pending = b""
+            while True:
+                running = process.poll() is None
+                # pread keeps our read position apart from restic's write offset.
+                chunk = os.pread(log.fileno(), 65536, offset)
+                if chunk:
+                    offset += len(chunk)
+                    *lines, pending = (pending + chunk).split(b"\n")
+                    for line in lines:
+                        handle(line)
                     continue
-                if not isinstance(message, dict):
-                    continue
-                if message.get("message_type") == "status" and "percent_done" in message:
-                    emit({"type": "progress", "percent": message["percent_done"]})
-                elif message.get("message_type") == "summary":
-                    summary = message
-                else:
-                    output.append(line)
-            returncode = process.wait()
+                if not running:
+                    break
+                if cancelled_at is not None and time.monotonic() - cancelled_at > CANCEL_GRACE_SECONDS:
+                    status.stop_process_group(process, 0)
+                time.sleep(0.2)
+            if pending:
+                handle(pending)
+            if cancelled_at is not None:
+                status.signal_group(process, signal.SIGKILL)
         finally:
             signal.signal(signal.SIGTERM, previous)
+    returncode = process.returncode
+    cancelled = cancelled_at is not None
 
     if cancelled:
         remove_if_empty(restored, folder)

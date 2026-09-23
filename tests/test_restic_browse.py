@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -28,7 +29,19 @@ if mode == "password":
     print(json.dumps({"message_type": "exit_error", "code": 12, "message": "Fatal: wrong password"}))
     sys.exit(12)
 print(json.dumps({"message_type": "status", "percent_done": 0.5}), flush=True)
-if mode == "slow":
+if mode in ("slow", "wrapper"):
+    import signal, subprocess
+    marker = os.environ.get("FAKE_RESTIC_TERM_MARKER")
+    def stop(signum, frame):
+        if marker:
+            Path(marker).write_text("terminated")
+        sys.exit(143)
+    signal.signal(signal.SIGTERM, stop)
+    if mode == "wrapper":
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        Path(os.environ["FAKE_RESTIC_CHILD"]).write_text(str(child.pid))
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        child.wait()
     time.sleep(30)
 target = Path(args[args.index("--target") + 1])
 if "--include" in args:
@@ -51,6 +64,14 @@ class ListRunner:
     def run(self, command, *, timeout, env=None):
         self.calls.append(command)
         return self.result
+
+
+def alive(pid: int) -> bool:
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[1].split()[0]
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    return state != "Z"
 
 
 def node(path: str, kind: str = "file", size: int | None = 1) -> str:
@@ -203,28 +224,112 @@ class ResticBrowseTest(unittest.TestCase):
         self.assertEqual(event["type"], "error")
         self.assertFalse(self.log.exists())
 
-    def test_cancel_stops_restic_and_reports_cancelled(self):
+    def start_restore(self, mode: str, **env: str) -> subprocess.Popen:
         process = subprocess.Popen(
             [sys.executable, str(PROJECT_DIR / "scripts" / "restic_browse.py"), "restore",
              "--config", str(self.config()), "--cache-dir", str(self.root / "cache"), "--job", "home",
              "--snapshot", SNAPSHOT, "--path", "/home/test/big.iso", "--target-root", str(self.root / "out")],
-            stdout=subprocess.PIPE, text=True, env=dict(os.environ, FAKE_RESTIC_MODE="slow"),
+            stdout=subprocess.PIPE, text=True, env=dict(os.environ, FAKE_RESTIC_MODE=mode, **env),
         )
-        try:
-            self.assertEqual(json.loads(process.stdout.readline())["type"], "progress")
-            process.send_signal(signal.SIGTERM)
-            event = json.loads(process.stdout.readline())
-            self.assertEqual(process.wait(timeout=10), 0)
-        finally:
-            process.kill()
-            process.stdout.close()
+        self.addCleanup(process.stdout.close)
+        self.addCleanup(process.kill)
+        self.assertEqual(json.loads(process.stdout.readline())["type"], "progress")
+        return process
 
+    def wait_for(self, condition, timeout: float = 10) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if condition():
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_cancel_stops_restic_and_reports_cancelled(self):
+        marker = self.root / "terminated"
+        process = self.start_restore("slow", FAKE_RESTIC_TERM_MARKER=str(marker))
+        process.send_signal(signal.SIGTERM)
+        event = json.loads(process.stdout.readline())
+
+        self.assertEqual(process.wait(timeout=10), 0)
         self.assertEqual(event["type"], "cancelled")
+        self.assertTrue(marker.exists())
         self.assertEqual(list((self.root / "out").iterdir()), [])
+
+    def test_cancel_stops_every_process_a_restic_wrapper_started(self):
+        child_file = self.root / "child.pid"
+        process = self.start_restore("wrapper", FAKE_RESTIC_CHILD=str(child_file))
+        self.assertTrue(self.wait_for(child_file.exists))
+        child = int(child_file.read_text())
+        self.addCleanup(lambda: os.kill(child, signal.SIGKILL) if alive(child) else None)
+
+        started = time.monotonic()
+        process.send_signal(signal.SIGTERM)
+        event = json.loads(process.stdout.readline())
+        self.assertEqual(process.wait(timeout=10), 0)
+        self.assertEqual(event["type"], "cancelled")
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertTrue(self.wait_for(lambda: not alive(child)))
+
+    def test_killed_helper_asks_restic_to_stop(self):
+        marker = self.root / "terminated"
+        process = self.start_restore("slow", FAKE_RESTIC_TERM_MARKER=str(marker))
+        process.kill()
+        process.wait(timeout=10)
+        self.assertTrue(self.wait_for(marker.exists))
 
 
 @unittest.skipUnless(shutil.which("restic"), "restic is not installed")
 class ResticRoundTripTest(unittest.TestCase):
+    def test_killed_restore_releases_the_repository_lock(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "source").mkdir()
+            (root / "source" / "big.bin").write_bytes(os.urandom(8 * 1024 * 1024))
+            (root / "repository").write_text(str(root / "repo"))
+            (root / "password").write_text("secret")
+            slow = root / "slow-restic"
+            slow.write_text('#!/bin/sh\nexec restic --limit-download 256 "$@"\n')
+            slow.chmod(0o755)
+            config = root / "jobs.json"
+            config.write_text(json.dumps({"schemaVersion": 1, "jobs": [{
+                "id": "big", "name": "Big", "service": "big.service", "timer": "big.timer",
+                "repositoryFile": str(root / "repository"), "passwordFile": str(root / "password"),
+                "restic": str(slow),
+            }]}))
+            restic = ["restic", "-q", "--repository-file", str(root / "repository"),
+                      "--password-file", str(root / "password"), "--cache-dir", str(root / "restic-cache")]
+            subprocess.run(restic + ["init"], check=True, capture_output=True)
+            subprocess.run(restic + ["backup", str(root / "source")], check=True, capture_output=True)
+            snapshot = json.loads(subprocess.run(
+                restic + ["snapshots", "--json"], check=True, capture_output=True, text=True,
+            ).stdout)[0]["id"]
+
+            def locks() -> list[str]:
+                return subprocess.run(
+                    restic + ["list", "locks", "--no-lock"], check=True, capture_output=True, text=True,
+                ).stdout.split()
+
+            helper = subprocess.Popen(
+                [sys.executable, str(PROJECT_DIR / "scripts" / "restic_browse.py"), "restore",
+                 "--config", str(config), "--cache-dir", str(root / "cache"), "--job", "big",
+                 "--snapshot", snapshot, "--path", str(root / "source" / "big.bin"),
+                 "--target-root", str(root / "Restored")],
+                stdout=subprocess.DEVNULL,
+            )
+            try:
+                deadline = time.monotonic() + 15
+                while not locks() and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                self.assertTrue(locks(), "restore never took a repository lock")
+            finally:
+                helper.kill()
+                helper.wait(timeout=10)
+
+            deadline = time.monotonic() + 20
+            while locks() and time.monotonic() < deadline:
+                time.sleep(0.2)
+            self.assertEqual(locks(), [])
+
     def test_browse_and_restore_files_with_pattern_characters(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

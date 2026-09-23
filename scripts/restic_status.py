@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -18,7 +19,7 @@ import tempfile
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import IO, Any, Callable
 
 
 REPORT_SCHEMA_VERSION = 1
@@ -213,6 +214,65 @@ class RepositoryUnavailable(RuntimeError):
     pass
 
 
+PR_SET_PDEATHSIG = 1
+LIBC = ctypes.CDLL(None, use_errno=True)
+
+
+def stop_with_parent(parent: int) -> Callable[[], None]:
+    def configure() -> None:
+        LIBC.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+        if os.getppid() != parent:
+            os._exit(1)
+    return configure
+
+
+# Children write to files rather than pipes and receive SIGTERM if this
+# process dies. When the shell kills a helper, restic then shuts down through
+# its own signal handling and releases its repository lock, instead of dying
+# on SIGPIPE with the lock still in place.
+def spawn(
+    command: list[str],
+    *,
+    env: dict[str, str] | None,
+    stdout: IO[bytes],
+    stderr: IO[bytes] | int,
+) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=stdout,
+        stderr=stderr,
+        env=env,
+        start_new_session=True,
+        preexec_fn=stop_with_parent(os.getpid()),
+    )
+
+
+def signal_group(process: subprocess.Popen[bytes], sig: int) -> None:
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def stop_process_group(process: subprocess.Popen[bytes], grace: float) -> None:
+    signal_group(process, signal.SIGTERM)
+    try:
+        process.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        pass
+    signal_group(process, signal.SIGKILL)
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def read_output(handle: IO[bytes]) -> str:
+    handle.seek(0)
+    return handle.read().decode("utf-8", errors="replace")
+
+
 class Runner:
     def run(
         self,
@@ -221,35 +281,16 @@ class Runner:
         timeout: int,
         env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            text=True,
-            start_new_session=True,
-        )
-        try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            for sig in (signal.SIGTERM, signal.SIGKILL):
-                try:
-                    os.killpg(process.pid, sig)
-                except ProcessLookupError:
-                    pass
-                try:
-                    process.communicate(timeout=5)
-                    break
-                except subprocess.TimeoutExpired:
-                    pass
-            process.stdout.close()
-            process.stderr.close()
+        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+            process = spawn(command, env=env, stdout=stdout, stderr=stderr)
             try:
-                process.wait(timeout=5)
+                process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                pass
-            raise
-        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                stop_process_group(process, 5)
+                raise
+            return subprocess.CompletedProcess(
+                command, process.returncode, read_output(stdout), read_output(stderr)
+            )
 
 
 def utc_now() -> datetime:

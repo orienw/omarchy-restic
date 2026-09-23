@@ -1177,6 +1177,33 @@ class ResticStatusTest(unittest.TestCase):
             )
         self.assertLess(time.perf_counter() - started, 10)
 
+    def test_runner_children_stop_when_the_collector_is_killed(self):
+        marker = self.root / "terminated"
+        child = "\n".join([
+            "import signal, sys, time",
+            "from pathlib import Path",
+            f"signal.signal(signal.SIGTERM, lambda *_: (Path({str(marker)!r}).write_text('x'), sys.exit(0)))",
+            "print('ready', flush=True)",
+            "time.sleep(60)",
+        ])
+        collector = subprocess.Popen([
+            sys.executable, "-c",
+            "\n".join([
+                "import sys",
+                f"sys.path.insert(0, {str(PROJECT_DIR / 'scripts')!r})",
+                "import restic_status",
+                f"restic_status.Runner().run([sys.executable, '-c', {child!r}], timeout=60)",
+            ]),
+        ])
+        self.addCleanup(collector.kill)
+        time.sleep(1)
+        collector.kill()
+        collector.wait(timeout=10)
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(marker.exists())
+
     def test_runner_kills_descendants_and_bounds_pipe_cleanup(self):
         for detached in (False, True):
             with self.subTest(detached=detached):
