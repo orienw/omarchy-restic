@@ -1,11 +1,17 @@
 import json
 import sys
+import time
 
 command = sys.argv[1]
 options = dict(argument.split("=", 1) for argument in sys.argv[2:])
 if command == "snapshots" and options["--job"] == "single":
     print(json.dumps({"type": "snapshots", "snapshots": [
         {"id": "c" * 64, "shortId": "cccccccc", "time": "2026-08-17T03:30:00Z", "paths": ["/home/test/config.toml"]},
+    ]}))
+elif command == "snapshots" and options["--job"] == "swaproot":
+    print(json.dumps({"type": "snapshots", "snapshots": [
+        {"id": "b" * 64, "shortId": "bbbbbbbb", "time": "2026-08-17T03:30:00Z", "paths": ["/home/test/Swap"]},
+        {"id": "a" * 64, "shortId": "aaaaaaaa", "time": "2026-08-16T03:30:00Z", "paths": ["/home/test/Swap"]},
     ]}))
 elif command == "snapshots":
     print(json.dumps({"type": "snapshots", "snapshots": [
@@ -26,6 +32,8 @@ elif options["--path"] in ("/home/test/Empty", "/home/test/Gone", "/home/test/co
     print(json.dumps({"type": "entries", "path": options["--path"], "truncated": False, "entries": [],
                       "exists": kind == "dir", "kind": kind}))
 elif options["--path"] == "/home/test/Swap":
+    if options["--job"] == "swaproot" and options["--snapshot"] == "b" * 64:
+        time.sleep(0.6)
     if options["--snapshot"] == "a" * 64:
         print(json.dumps({"type": "entries", "path": "/home/test/Swap", "truncated": False, "entries": [],
                           "exists": False, "kind": "symlink"}))

@@ -34,7 +34,10 @@ Item {
   property var listings: ({})
   property int session: 0
   property string shownKey: ""
-  property bool openingRoot: false
+  // The one listing allowed to redirect a single-file snapshot to its folder:
+  // the newest snapshot's root. A listing for any other snapshot or path,
+  // including one that arrives after a quick switch, never redirects.
+  property string openingKey: ""
 
   property var _active: null
   property var _pending: null
@@ -62,6 +65,7 @@ Item {
 
   function open(target) {
     session++
+    openingKey = ""
     job = target
     shownKey = ""
     snapshots = []
@@ -124,8 +128,9 @@ Item {
     if (item.kind === "snapshots") {
       snapshots = Array.isArray(result.snapshots) ? result.snapshots : []
       snapshotIndex = 0
-      openingRoot = true
-      if (snapshot) navigate(Model.browseRoot(snapshot), "")
+      if (!snapshot) return
+      openingKey = listingKey(Model.browseRoot(snapshot))
+      navigate(Model.browseRoot(snapshot), "")
     } else {
       listings[item.key] = result
       if (current) show(result)
@@ -140,8 +145,8 @@ Item {
     // A snapshot of a single file starts at the file: open its folder instead.
     // Only when opening; elsewhere a path that is not a folder is simply not
     // in this snapshot, and the selection stays as it was.
-    var opening = openingRoot
-    openingRoot = false
+    var opening = openingKey !== "" && openingKey === listingKey(path)
+    if (opening) openingKey = ""
     if (opening && listing.kind && listing.kind !== "dir" && listing.kind !== "missing") {
       navigate(Model.parentPath(path), Model.baseName(path))
       return

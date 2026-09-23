@@ -52,7 +52,8 @@ ShellRoot {
         root.fail("the snapshot browser failed to load")
         return
       }
-      if (!browser || browser.loading) return
+      // Stage 72 races the first listing on purpose, so it runs while loading.
+      if (!browser || (browser.loading && root.stage !== 72)) return
 
       if (root.stage === 0) {
         if (browser.path !== "/home/test" || browser.entries.length !== 4) return
@@ -211,6 +212,30 @@ ShellRoot {
         if (browser.path !== "/home/test/Swap" || browser.selectedName !== "inside.txt"
             || browser.restoreTarget !== null || browser.folderRestorable) {
           root.fail("a folder that is a symlink in another snapshot redirected the selection: "
+            + browser.path + " " + browser.selectedName)
+          return
+        }
+        browser.open({ id: "swaproot", name: "Swap root" })
+        root.stage = 72
+        return
+      }
+
+      if (root.stage === 72) {
+        if (browser.snapshots.length === 0) return
+        if (browser.listingReady) {
+          root.fail("the slow first listing finished before the switch could race it")
+          return
+        }
+        browser.switchSnapshot(1)
+        root.stage = 73
+        return
+      }
+
+      if (root.stage === 73) {
+        if (!browser.listingReady) return
+        if (browser.path !== "/home/test/Swap" || browser.selectedName !== ""
+            || browser.restoreTarget !== null || browser.folderRestorable) {
+          root.fail("switching during the first listing still redirected to the parent: "
             + browser.path + " " + browser.selectedName)
           return
         }
