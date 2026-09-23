@@ -114,6 +114,33 @@ ShellRoot {
         return
       }
 
+      service.restoreState = "running"
+      service.restoreName = "notes.md"
+      service.handleRestoreLine("not json")
+      service.handleRestoreLine(JSON.stringify({type: "progress", percent: 0.25}))
+      if (service.restoreState !== "running" || service.restorePercent !== 0.25) {
+        root.fail("restore progress was not tracked")
+        return
+      }
+      service.handleRestoreLine(JSON.stringify({type: "done", path: "/tmp/r/notes.md", folder: "/tmp/r"}))
+      service.handleRestoreLine(JSON.stringify({type: "error", error: "late"}))
+      if (service.restoreState !== "done" || service.restoreFolder !== "/tmp/r" || service.restoreError !== "") {
+        root.fail("restore completion was not kept: " + service.restoreState)
+        return
+      }
+      service.clearRestore()
+      service.restoreState = "running"
+      service.handleRestoreLine(JSON.stringify({type: "error", error: "Wrong repository password"}))
+      if (service.restoreState !== "error" || service.restoreError !== "Wrong repository password") {
+        root.fail("restore failure was not reported")
+        return
+      }
+      service.clearRestore()
+      if (service.restoreState !== "" || service.restoreEntry("home", null, null) !== "busy") {
+        root.fail("restore state did not clear or accepted a missing entry")
+        return
+      }
+
       service.applyReport(JSON.stringify({
         schemaVersion: 1, generatedAt: new Date().toISOString(), overallStatus: "healthy",
         summary: {jobs: 2, healthy: 1, running: 1, attention: 0, unknown: 0},

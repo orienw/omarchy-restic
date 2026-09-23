@@ -21,6 +21,7 @@ ln -s "$OMARCHY_ROOT/shell/Commons" "$IMPORT_ROOT/qs/Commons"
   -I "$IMPORT_ROOT" \
   "$PROJECT_DIR/Service.qml" \
   "$PROJECT_DIR/BarWidget.qml" \
-  "$PROJECT_DIR/Panel.qml"
+  "$PROJECT_DIR/Panel.qml" \
+  "$PROJECT_DIR/SnapshotBrowser.qml"
 
 printf 'QML checks passed\n'

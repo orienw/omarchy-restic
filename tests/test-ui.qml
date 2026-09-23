@@ -75,6 +75,15 @@ ShellRoot {
     property string startingJob: ""
     property string actionError: ""
     property var backupCalls: []
+    property string jobsFile: "/nonexistent/jobs.json"
+    property string browsePath: Quickshell.env("RESTIC_PLUGIN_DIR") + "/tests/fake-browse.py"
+    property string home: "/home/test"
+    property string restoreState: ""
+    property string restoreName: ""
+    property real restorePercent: -1
+    property string restorePath: ""
+    property string restoreError: ""
+    property var restoreCalls: []
     property var report: ({
       schemaVersion: 1,
       generatedAt: generatedAt,
@@ -127,6 +136,15 @@ ShellRoot {
       backupCalls = backupCalls.concat([jobId])
       return "started"
     }
+
+    function restoreEntry(jobId, snapshot, entry) {
+      restoreCalls = restoreCalls.concat([[jobId, snapshot.shortId, entry.path, entry.type]])
+      return "started"
+    }
+
+    function clearRestore() {}
+    function cancelRestore() {}
+    function openRestoreFolder() {}
   }
 
   QtObject {
@@ -327,6 +345,74 @@ ShellRoot {
           return
         }
         fakeService.startingJob = ""
+        if (!events.keyClick(Qt.Key_Return, Qt.NoModifier, -1)) {
+          root.fail("the panel window did not accept Enter")
+          return
+        }
+        root.stage = 46
+        return
+      }
+
+      var livePanel = root.findByName(widget, "resticPanel")
+      var browser = livePanel ? livePanel.snapshotBrowser : null
+      if (root.stage === 46) {
+        if (!livePanel || !livePanel.browsingJob || livePanel.browsingJob.id !== "home") {
+          root.fail("Enter on the selected job did not open its snapshots")
+          return
+        }
+        if (browser.loading || browser.entries.length === 0) return
+        if (browser.snapshots.length !== 2 || browser.path !== "/home/test"
+            || browser.entries[0].name !== "Documents" || browser.selectedIndex !== -1) {
+          root.fail("the browser did not open the newest snapshot at the backed-up folder")
+          return
+        }
+        if (root.literalTextCount(browser) !== 1) {
+          root.fail("snapshot entry names were not rendered literally")
+          return
+        }
+        events.keyClick(Qt.Key_Down, Qt.NoModifier, -1)
+        events.keyClick(Qt.Key_Right, Qt.NoModifier, -1)
+        root.stage = 47
+        return
+      }
+
+      if (root.stage === 47) {
+        if (browser.loading || browser.path !== "/home/test/Documents" || browser.entries.length !== 1) return
+        events.keyClickChar("[", Qt.NoModifier, -1)
+        root.stage = 48
+        return
+      }
+
+      if (root.stage === 48) {
+        if (browser.loading || browser.snapshotIndex !== 1 || browser.entries.length !== 1) return
+        if (browser.path !== "/home/test/Documents") {
+          root.fail("switching snapshots left the current folder")
+          return
+        }
+        events.keyClick(Qt.Key_Down, Qt.NoModifier, -1)
+        events.keyClickChar("r", Qt.NoModifier, -1)
+        if (JSON.stringify(fakeService.restoreCalls)
+            !== JSON.stringify([["home", "aaaaaaaa", "/home/test/Documents/notes.md", "file"]])) {
+          root.fail("R did not restore the selected file from the chosen snapshot: "
+            + JSON.stringify(fakeService.restoreCalls))
+          return
+        }
+        events.keyClick(Qt.Key_Left, Qt.NoModifier, -1)
+        root.stage = 49
+        return
+      }
+
+      if (root.stage === 49) {
+        if (browser.path !== "/home/test" || browser.selectedEntry === null
+            || browser.selectedEntry.name !== "Documents") {
+          root.fail("going up did not return to the parent with the folder selected")
+          return
+        }
+        events.keyClick(Qt.Key_Escape, Qt.NoModifier, -1)
+        if (livePanel.browsingJob || !widget.opened) {
+          root.fail("Escape in the browser did not return to the job list")
+          return
+        }
         fakeService.overallStatus = "running"
         root.rotationStart = root.barButton.textRotation
         root.stage = 5
@@ -360,7 +446,7 @@ ShellRoot {
   }
 
   Timer {
-    interval: 5000
+    interval: 15000
     running: true
     repeat: false
     onTriggered: if (!root.finished) root.fail("UI smoke test timed out")

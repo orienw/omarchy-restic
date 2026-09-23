@@ -226,12 +226,73 @@ function alertCommand(job) {
     "omarchy-notification-send", "--app-name", "Restic", "-g", "󰁯", "-u", "normal",
     String(job.name || job.id) + " backup needs attention",
     // Notification bodies are StyledText, summaries are plain.
-    String(entry.message || job.statusText || "Open the Restic panel for details")
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    escapeMarkup(entry.message || job.statusText || "Open the Restic panel for details")
   ]
   var unit = backupUnit(job)
   if (unit !== "")
     command.push("--exec", "uwsm-app", "--", "xdg-terminal-exec",
       "journalctl", "--user", "--unit", unit, "--pager-end")
   return command
+}
+
+function escapeMarkup(value) {
+  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+}
+
+function parentPath(path) {
+  var value = String(path || "/")
+  var index = value.lastIndexOf("/")
+  return index <= 0 ? "/" : value.substring(0, index)
+}
+
+function baseName(path) {
+  var value = String(path || "")
+  return value.substring(value.lastIndexOf("/") + 1)
+}
+
+// The deepest folder shared by every backed-up path, so browsing starts
+// where the files are rather than at the filesystem root.
+function browseRoot(snapshot) {
+  var paths = snapshot && Array.isArray(snapshot.paths) ? snapshot.paths : []
+  if (paths.length === 0) return "/"
+  var common = String(paths[0]).split("/")
+  for (var i = 1; i < paths.length; i++) {
+    var parts = String(paths[i]).split("/")
+    var shared = 0
+    while (shared < common.length && shared < parts.length && common[shared] === parts[shared]) shared++
+    common = common.slice(0, shared)
+  }
+  var root = common.join("/")
+  return root.charAt(0) === "/" && root.length > 1 ? root : "/"
+}
+
+function snapshotLabel(snapshot) {
+  if (!snapshot) return "No snapshot"
+  var time = new Date(Date.parse(String(snapshot.time || "")))
+  var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+  var pad = function(value) { return value < 10 ? "0" + value : String(value) }
+  var label = isFinite(time.getTime())
+    ? months[time.getMonth()] + " " + time.getDate() + ", " + time.getFullYear()
+      + " " + pad(time.getHours()) + ":" + pad(time.getMinutes())
+    : "Unknown time"
+  return label + " · " + String(snapshot.shortId || "")
+}
+
+function tildePath(path, home) {
+  var value = String(path || "")
+  var prefix = String(home || "")
+  if (prefix === "" || prefix === "/") return value
+  if (value === prefix) return "~"
+  return value.indexOf(prefix + "/") === 0 ? "~" + value.substring(prefix.length) : value
+}
+
+function restoreNotice(event, name, home) {
+  var base = ["omarchy-notification-send", "--app-name", "Restic", "-g", "󰁯", "-u", "normal"]
+  if (event.type === "done")
+    return base.concat([
+      "Restored " + name,
+      escapeMarkup(tildePath(event.path, home)),
+      "--exec", "uwsm-app", "--", "xdg-open", String(event.folder)
+    ])
+  return base.concat(["Could not restore " + name, escapeMarkup(event.error || "Restore failed")])
 }

@@ -10,6 +10,7 @@ import "Model.js" as Model
 
 Panel {
   id: root
+  objectName: "resticPanel"
   moduleName: "io.github.orienw.restic"
 
   property var anchorItem: null
@@ -17,6 +18,8 @@ Panel {
   property double nowMs: Date.now()
   property var detailsOverrides: ({})
   property int cursorIndex: -1
+  property var browsingJob: null
+  property alias snapshotBrowser: browser
 
   readonly property var barIdentity: hostWidget || root
   readonly property var resticService: bar && bar.shell
@@ -31,6 +34,7 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   function open() {
+    browsingJob = null
     controller.show()
     nowMs = Date.now()
     if (resticService) resticService.refresh(false)
@@ -67,6 +71,23 @@ Panel {
     if (card.y < flick.contentY) flick.contentY = card.y
     else if (card.y + card.height > flick.contentY + flick.height)
       flick.contentY = card.y + card.height - flick.height
+  }
+
+  function browse(job) {
+    if (!job || !resticService) return
+    browsingJob = job
+    browser.open(job)
+  }
+
+  function stopBrowsing() {
+    browsingJob = null
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function activate() {
+    if (browsingJob) browser.openSelected()
+    else if (cursorIndex >= 0) browse(targetJob())
+    else refreshRepositories()
   }
 
   function backUp(job) {
@@ -108,23 +129,48 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(420))
-    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(620))
+    contentHeight: panel.fittedContentHeight(
+      root.browsingJob ? browser.implicitHeight : content.implicitHeight, Style.space(620))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onActivateRequested: root.refreshRepositories()
-      onCloseRequested: root.close()
+      onActivateRequested: root.activate()
+      onCloseRequested: root.browsingJob ? root.stopBrowsing() : root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveCursor(dy) }
+      onMoveRequested: function(dx, dy) {
+        if (!root.browsingJob) {
+          if (dy !== 0) root.moveCursor(dy)
+        } else if (dy !== 0) {
+          browser.moveSelection(dy)
+        } else if (dx > 0) {
+          browser.openSelected()
+        } else if (dx < 0) {
+          browser.goUp()
+        }
+      }
       onTextKey: function(text) {
-        if (text === "r" || text === "R") root.refreshRepositories()
+        if (root.browsingJob) browser.handleText(text)
+        else if (text === "r" || text === "R") root.refreshRepositories()
         else if (text === "b" || text === "B") root.backUp(root.targetJob())
+      }
+
+      SnapshotBrowser {
+        id: browser
+        anchors.fill: parent
+        visible: !!root.browsingJob
+        service: root.resticService
+        foreground: root.foreground
+        urgent: root.urgent
+        dim: root.dim
+        fontFamily: root.fontFamily
+        onCloseRequested: root.stopBrowsing()
       }
 
       Flickable {
         id: flick
         anchors.fill: parent
+        visible: !root.browsingJob
         contentWidth: width
         contentHeight: content.implicitHeight
         clip: true
@@ -176,6 +222,21 @@ Panel {
             width: parent.width
             text: root.resticService ? root.resticService.actionError : ""
             color: root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: text !== ""
+            width: parent.width
+            text: root.resticService && root.resticService.restoreState === "running"
+              ? "Restoring " + root.resticService.restoreName + "..."
+              : root.resticService && root.resticService.restoreState === "error"
+                ? root.resticService.restoreError
+                : ""
+            color: root.resticService && root.resticService.restoreState === "error" ? root.urgent : root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap
@@ -318,19 +379,34 @@ Panel {
                   InfoPair { label: "Integrity"; value: Model.integrityState(jobCard.job, root.nowMs) }
                 }
 
-                Button {
-                  objectName: "backupButton-" + String(jobCard.job.id || "")
-                  text: root.backupLabel(jobCard.job)
-                  iconText: "󰁯"
-                  iconSpinning: root.backupBusy(jobCard.job)
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.bodySmall
-                  bordered: true
-                  enabled: Model.canBackUp(jobCard.job)
-                    && !!root.resticService && root.resticService.startingJob === ""
-                  opacity: enabled || root.backupBusy(jobCard.job) ? 1 : 0.5
-                  onClicked: root.backUp(jobCard.job)
+                Row {
+                  spacing: Style.space(8)
+
+                  Button {
+                    objectName: "backupButton-" + String(jobCard.job.id || "")
+                    text: root.backupLabel(jobCard.job)
+                    iconText: "󰁯"
+                    iconSpinning: root.backupBusy(jobCard.job)
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.bodySmall
+                    bordered: true
+                    enabled: Model.canBackUp(jobCard.job)
+                      && !!root.resticService && root.resticService.startingJob === ""
+                    opacity: enabled || root.backupBusy(jobCard.job) ? 1 : 0.5
+                    onClicked: root.backUp(jobCard.job)
+                  }
+
+                  Button {
+                    objectName: "browseButton-" + String(jobCard.job.id || "")
+                    text: "Browse snapshots"
+                    iconText: "󰉋"
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.bodySmall
+                    bordered: true
+                    onClicked: root.browse(jobCard.job)
+                  }
                 }
               }
             }

@@ -209,6 +209,10 @@ class DiscoveryError(RuntimeError):
     pass
 
 
+class RepositoryUnavailable(RuntimeError):
+    pass
+
+
 class Runner:
     def run(
         self,
@@ -1384,6 +1388,29 @@ def restic_command(job: dict[str, Any], restic: str, cache_dir: Path) -> list[st
     ]
 
 
+def restic_base(job: dict[str, Any], config_path: Path, cache_dir: Path) -> list[str]:
+    if job.get("discoveryError"):
+        raise RepositoryUnavailable(
+            job["discoveryError"] + ". Add a jobs.json override for this service."
+        )
+    repository_file = Path(job["repositoryFile"])
+    if not repository_file.is_file():
+        raise RepositoryUnavailable(f"Repository file not found: {repository_file}")
+    password_file = Path(job["passwordFile"])
+    if not password_file.is_file():
+        raise RepositoryUnavailable(f"Password file not found: {password_file}")
+    restic = resolve_restic(job["restic"])
+    if not restic:
+        raise RepositoryUnavailable(f"Restic command not found: {job['restic']}")
+
+    restic_cache_dir = cache_file(cache_dir, config_path, job["id"]).parent / "restic" / job["id"]
+    try:
+        ensure_private_cache_directory(cache_dir, restic_cache_dir)
+    except OSError as error:
+        raise RepositoryUnavailable(f"Could not create restic cache: {sanitize(error)}") from error
+    return restic_command(job, restic, restic_cache_dir)
+
+
 def normalized_summary(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
@@ -1679,52 +1706,14 @@ def collect_repository(
             str(cached.get("error") or ""),
         )
 
-    if job.get("discoveryError"):
-        error = job["discoveryError"] + ". Add a jobs.json override for this service."
-        return (
-            repository_cache_failure(path, cached, "stale", error, now)
-            if cached
-            else repository_uncached_failure(path, key, "unavailable", error, now)
-        )
-
-    repository_file = Path(job["repositoryFile"])
-    password_file = Path(job["passwordFile"])
-    if not repository_file.is_file():
-        error = f"Repository file not found: {repository_file}"
-        return (
-            repository_cache_failure(path, cached, "stale", error, now)
-            if cached
-            else repository_uncached_failure(path, key, "unavailable", error, now)
-        )
-    if not password_file.is_file():
-        error = f"Password file not found: {password_file}"
-        return (
-            repository_cache_failure(path, cached, "stale", error, now)
-            if cached
-            else repository_uncached_failure(path, key, "unavailable", error, now)
-        )
-
-    restic = resolve_restic(job["restic"])
-    if not restic:
-        error = f"Restic command not found: {job['restic']}"
-        return (
-            repository_cache_failure(path, cached, "stale", error, now)
-            if cached
-            else repository_uncached_failure(path, key, "unavailable", error, now)
-        )
-
-    restic_cache_dir = path.parent / "restic" / job["id"]
     try:
-        ensure_private_cache_directory(cache_dir, restic_cache_dir)
-    except OSError as error:
-        message = f"Could not create restic cache: {sanitize(error)}"
+        base = restic_base(job, config_path, cache_dir)
+    except RepositoryUnavailable as error:
         return (
-            repository_cache_failure(path, cached, "stale", message, now)
+            repository_cache_failure(path, cached, "stale", str(error), now)
             if cached
-            else repository_uncached_failure(path, key, "unavailable", message, now)
+            else repository_uncached_failure(path, key, "unavailable", str(error), now)
         )
-
-    base = restic_command(job, restic, restic_cache_dir)
     snapshot_command = base + ["snapshots"]
     if job["tag"]:
         snapshot_command.extend(["--tag", job["tag"]])
@@ -2171,8 +2160,11 @@ def collect_report(
     }
 
 
+def default_cache_dir() -> Path:
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "omarchy-restic"
+
+
 def parser() -> argparse.ArgumentParser:
-    default_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "omarchy-restic"
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument(
         "--config",
@@ -2180,7 +2172,7 @@ def parser() -> argparse.ArgumentParser:
         type=expanded_path,
         help="Optional jobs.json overrides merged with systemd discovery",
     )
-    result.add_argument("--cache-dir", type=expanded_path, default=default_cache)
+    result.add_argument("--cache-dir", type=expanded_path, default=default_cache_dir())
     result.add_argument("--repository-cache-seconds", type=int, default=900)
     result.add_argument("--force-repositories", action="store_true")
     result.add_argument("--log-lines", type=int, default=12)

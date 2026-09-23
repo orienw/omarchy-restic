@@ -1,10 +1,12 @@
 # Restic for Omarchy
 
-An Omarchy shell plugin for the restic backups you already run. It finds your existing restic systemd jobs, tells you whether they are working, and starts one on demand.
+An Omarchy shell plugin for the restic backups you already run. It finds your existing restic systemd jobs, tells you whether they are working, starts one on demand, and gets files back from any snapshot.
+
+Other restic plugins set up backups for you. This one adopts the setup you already have: no migration, no second config, no new timers.
 
 ![Restic status panel with sample data](preview.png)
 
-## What it shows
+## What it does
 
 - Overall health in the Omarchy bar and per-job status in the panel
 - Last completed run, duration, and next timer run
@@ -15,6 +17,7 @@ An Omarchy shell plugin for the restic backups you already run. It finds your ex
 - Redacted recent logs when a job needs attention
 - A **Back up now** action that starts the job's own systemd service
 - A desktop notification when a job needs attention
+- A snapshot browser that restores a file or folder into `~/Restored`
 
 Health follows completed systemd runs, not snapshot age. This matters when a backup uses `--skip-if-unchanged`, because a successful unchanged run intentionally creates no snapshot. If no run history survives, the timer's last trigger time is used instead.
 
@@ -33,11 +36,15 @@ The plugin never changes your repository or backup configuration. For status it 
 - `restic snapshots --json`
 - `restic stats --json --mode raw-data`
 
+Browsing and restoring add `restic ls --json` and `restic restore`.
+
 **Back up now** runs `systemctl --user start --no-block` on the job's existing backup service, the same thing its timer does. It is unavailable while that job is running. While any job runs, status refreshes every 10 seconds so the result appears promptly.
 
 Discovery inspects effective user-unit properties, including drop-ins, and reads referenced environment files and local wrapper scripts as plain text. It never sources them. Environment files override unit environment settings in their declared order.
 
 Repository commands use normal restic locking and are deferred while the matching service is active. The lock protects the race if a job starts between checks. Successful metadata is cached for later display and refreshed after each completed backup run. After a failed refresh, the plugin waits one repository refresh interval before trying again, unless a refresh is forced. Cache directories use mode `0700`, cache files use mode `0600`, and restic gets a private cache directory under the plugin cache.
+
+**Restore** writes only into a new folder it creates under `~/Restored`. It never restores over your current files, and it never reuses a folder, so an earlier restore is never overwritten either.
 
 The plugin never uses `--no-lock`, reads password contents itself, prunes snapshots, unlocks repositories, or changes restic configuration.
 
@@ -125,6 +132,24 @@ Paths expand `~` and environment variables. Backend credentials needed by restic
 - Right click forces a read-only repository refresh.
 - Press `R` in the panel to force a repository refresh.
 - Press `↑`/`↓` or `j`/`k` to select a job, then `B` to back it up. With a single job, `B` needs no selection.
+- Press `Enter` on a selected job to browse its snapshots.
+
+## Getting files back
+
+Choose **Browse snapshots** on a job, or select the job and press `Enter`. The browser opens the newest snapshot at the folder your backup covers.
+
+- `↑`/`↓` or `j`/`k` select, `Enter` or `→` opens a folder, `Backspace` or `←` goes up.
+- `[` and `]` step to an older or newer snapshot and keep you in the same folder, so you can compare days.
+- `R` or **Restore** restores the selected file or folder. With nothing selected it restores the folder you are in.
+- `Esc` returns to the job list.
+
+Each restore lands in its own folder, such as `~/Restored/Home 2026-09-20 0300/notes.md`. Move files back into place yourself, where you can see what you are replacing. A notification says when the restore is done, and clicking it opens the folder. A running restore can be cancelled and keeps going if you close the panel.
+
+Restore somewhere else with:
+
+```bash
+omarchy bar set io.github.orienw.restic restoreDirectory '~/Recovered'
+```
 
 ## Notifications
 
@@ -132,7 +157,7 @@ When a job fails, falls overdue, loses its timer, or fails its integrity check, 
 
 A repository that is temporarily unreachable, such as a NAS while you are away from home, does not notify. It still shows in the bar and panel.
 
-Turn notifications off with:
+Turn off all notifications, including restore results, with:
 
 ```bash
 omarchy bar set io.github.orienw.restic notifications false --json
@@ -154,4 +179,4 @@ Removal only removes the Omarchy shell integration. It does not stop or change b
 
 ## Not included
 
-Repository creation, prune, unlock, retention editing, and restore are out of scope; use restic directly.
+Repository creation, prune, unlock, and retention editing are out of scope. Use restic directly.

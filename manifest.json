@@ -5,7 +5,7 @@
   "version": "0.2.2",
   "author": "Orien",
   "license": "MIT",
-  "description": "Monitors restic jobs, schedules, repositories, and integrity checks from the Omarchy bar.",
+  "description": "Monitors, runs, and restores the restic backups you already have, from the Omarchy bar.",
   "kinds": [
     "service",
     "bar-widget"
@@ -16,7 +16,7 @@
   },
   "barWidget": {
     "displayName": "Restic",
-    "description": "See backup health, schedules, repository statistics, and recent failures.",
+    "description": "See backup health, back up now, browse snapshots, and restore files.",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right",
@@ -25,7 +25,8 @@
       "refreshIntervalSec": 60,
       "repositoryRefreshMinutes": 15,
       "logLines": 12,
-      "notifications": true
+      "notifications": true,
+      "restoreDirectory": "~/Restored"
     },
     "schema": [
       {
@@ -60,6 +61,13 @@
         "label": "Failure notifications",
         "description": "Notify once when a job fails, falls overdue, or loses its schedule.",
         "defaultValue": true
+      },
+      {
+        "key": "restoreDirectory",
+        "type": "path",
+        "label": "Restore folder",
+        "description": "Each restore creates a new folder inside this one.",
+        "defaultValue": "~/Restored"
       },
       {
         "key": "logLines",

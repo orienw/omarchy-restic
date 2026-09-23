@@ -18,8 +18,10 @@ Item {
   readonly property int repositoryRefreshMinutes: intSetting("repositoryRefreshMinutes", 15, 1, 1440)
   readonly property int logLines: intSetting("logLines", 12, 1, 100)
   property bool notificationsEnabled: setting("notifications", true) !== false
-  readonly property string helperPath: decodeURIComponent(
-    String(Qt.resolvedUrl("scripts/restic_status.py")).replace(/^file:\/\//, ""))
+  readonly property string restoreDirectory: String(setting("restoreDirectory", "~/Restored"))
+  readonly property string helperPath: scriptPath("restic_status.py")
+  readonly property string browsePath: scriptPath("restic_browse.py")
+  readonly property string home: Quickshell.env("HOME") || ""
 
   property bool initialized: false
   property bool refreshing: false
@@ -28,6 +30,12 @@ Item {
   property string startingJob: ""
   property string actionError: ""
   property var alertedKeys: ({})
+  property string restoreState: ""
+  property string restoreName: ""
+  property real restorePercent: -1
+  property string restorePath: ""
+  property string restoreFolder: ""
+  property string restoreError: ""
   property var report: ({
     schemaVersion: 1,
     generatedAt: null,
@@ -61,6 +69,10 @@ Item {
   property bool _startStderrDone: false
   property bool _startExited: false
   property int _startExitCode: 0
+
+  function scriptPath(name) {
+    return decodeURIComponent(String(Qt.resolvedUrl("scripts/" + name)).replace(/^file:\/\//, ""))
+  }
 
   function findSettings() {
     var config = shell && shell.shellConfig ? shell.shellConfig : null
@@ -181,6 +193,65 @@ Item {
     return "started"
   }
 
+  function restoreEntry(jobId, snapshot, entry) {
+    if (restorer.running || !snapshot || !entry) return "busy"
+    restoreState = "running"
+    restoreName = String(entry.name || Model.baseName(entry.path))
+    restorePercent = -1
+    restorePath = ""
+    restoreFolder = ""
+    restoreError = ""
+    restorer.command = [
+      "python3", browsePath, "restore",
+      "--config", jobsFile,
+      "--job", String(jobId),
+      "--snapshot", String(snapshot.id),
+      "--snapshot-time", String(snapshot.time || ""),
+      "--path", String(entry.path),
+      "--type", String(entry.type || "file"),
+      "--target-root", restoreDirectory
+    ]
+    restorer.running = true
+    return "started"
+  }
+
+  function cancelRestore() {
+    if (restorer.running) restorer.signal(15)
+  }
+
+  function clearRestore() {
+    if (restoreState !== "running") restoreState = ""
+  }
+
+  function openRestoreFolder() {
+    if (restoreFolder !== "") Quickshell.execDetached(["uwsm-app", "--", "xdg-open", restoreFolder])
+  }
+
+  function handleRestoreLine(line) {
+    var event
+    try {
+      event = JSON.parse(line)
+    } catch (error) {
+      return
+    }
+    if (!event || restoreState !== "running") return
+    if (event.type === "progress") {
+      restorePercent = Number(event.percent)
+      return
+    }
+    if (event.type === "done") {
+      restorePath = String(event.path || "")
+      restoreFolder = String(event.folder || "")
+    } else if (event.type === "error") {
+      restoreError = elideError(event.error)
+    } else if (event.type !== "cancelled") {
+      return
+    }
+    restoreState = event.type
+    if (notificationsEnabled && event.type !== "cancelled")
+      Quickshell.execDetached(Model.restoreNotice(event, restoreName, home))
+  }
+
   function _finishStart() {
     if (!_startStderrDone || !_startExited) return
     if (_startExitCode !== 0) {
@@ -245,6 +316,29 @@ Item {
       root._exitCode = exitCode
       root._exited = true
       root._finalize()
+    }
+  }
+
+  Process {
+    id: restorer
+    running: false
+    command: []
+    stdout: SplitParser {
+      onRead: function(line) { root.handleRestoreLine(line) }
+    }
+    // The final JSON line can arrive after the exit signal, so give the
+    // parser a moment before calling a silent exit a failure.
+    onExited: restoreExitCheck.restart()
+  }
+
+  Timer {
+    id: restoreExitCheck
+    interval: 500
+    repeat: false
+    onTriggered: {
+      if (root.restoreState !== "running" || restorer.running) return
+      root.restoreState = "error"
+      root.restoreError = "Restore stopped unexpectedly"
     }
   }
 

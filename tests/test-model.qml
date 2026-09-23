@@ -194,6 +194,41 @@ ShellRoot {
         root.fail("an overdue job would alert again every hour")
         return
       }
+      if (Model.browseRoot({ paths: ["/home/test/Documents", "/home/test/Pictures"] }) !== "/home/test"
+          || Model.browseRoot({ paths: ["/home/test"] }) !== "/home/test"
+          || Model.browseRoot({ paths: ["/home/test", "/etc"] }) !== "/"
+          || Model.browseRoot({ paths: ["/home/ab", "/home/abc"] }) !== "/home"
+          || Model.browseRoot(null) !== "/") {
+        root.fail("browse root did not find the shared backed-up folder")
+        return
+      }
+      if (Model.parentPath("/home/test/notes.md") !== "/home/test" || Model.parentPath("/home") !== "/"
+          || Model.baseName("/home/test/notes.md") !== "notes.md") {
+        root.fail("path helpers split paths incorrectly")
+        return
+      }
+      if (Model.tildePath("/home/test/Restored/a", "/home/test") !== "~/Restored/a"
+          || Model.tildePath("/home/tester/a", "/home/test") !== "/home/tester/a"
+          || Model.tildePath("/etc/a", "/") !== "/etc/a") {
+        root.fail("home paths were not shortened safely")
+        return
+      }
+      if (Model.snapshotLabel({ time: "not a time", shortId: "abcd1234" }) !== "Unknown time · abcd1234") {
+        root.fail("an unparseable snapshot time was not labeled")
+        return
+      }
+      var done = Model.restoreNotice({ type: "done", path: "/home/test/Restored/<i>x</i>", folder: "/home/test/Restored" },
+        "<i>x</i>", "/home/test")
+      if (done[7] !== "Restored <i>x</i>" || done[8] !== "~/Restored/&lt;i&gt;x&lt;/i&gt;"
+          || done[done.length - 1] !== "/home/test/Restored") {
+        root.fail("restore notice was not built safely: " + JSON.stringify(done))
+        return
+      }
+      var failed = Model.restoreNotice({ type: "error", error: "Wrong repository password" }, "notes.md", "/home/test")
+      if (failed[7] !== "Could not restore notes.md" || failed.indexOf("--exec") !== -1) {
+        root.fail("failed restore notice was wrong: " + JSON.stringify(failed))
+        return
+      }
       console.log("model tests passed")
       Qt.quit()
     }
