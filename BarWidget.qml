@@ -12,6 +12,7 @@ BarWidget {
     ? bar.shell.serviceFor(moduleName)
     : null
   readonly property string status: resticService ? resticService.overallStatus : "unknown"
+  readonly property bool busy: status === "running" || (!!resticService && resticService.activeJobs > 0)
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
   readonly property bool popoutSwitchClosing: panelLoader.item
     ? panelLoader.item.popoutSwitchClosing === true
@@ -63,7 +64,7 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.status === "running" ? "󰑐" : "󰁯"
+    text: root.busy ? "󰑐" : "󰁯"
     active: root.status === "attention"
     dimmed: root.status === "unknown"
     tooltipText: Model.statusLabel(root.status)
@@ -73,7 +74,7 @@ BarWidget {
       to: 360
       duration: 900
       loops: Animation.Infinite
-      running: root.status === "running"
+      running: root.busy
     }
 
     onPressed: function(buttonCode) {

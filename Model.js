@@ -193,8 +193,18 @@ function backupUnit(job) {
   return /^[A-Za-z0-9_.:@-]+\.service$/.test(unit) ? unit : ""
 }
 
+// A job can be running while its health still reports an earlier failure,
+// so "busy" follows the service itself rather than the health status.
+function serviceActive(job) {
+  return !!(job && job.service && job.service.active)
+}
+
+function activeCount(jobs) {
+  return (Array.isArray(jobs) ? jobs : []).filter(serviceActive).length
+}
+
 function canBackUp(job) {
-  return backupUnit(job) !== "" && job.status !== "running" && !(job.service && job.service.active)
+  return backupUnit(job) !== "" && job.status !== "running" && !serviceActive(job)
 }
 
 function alertIssue(job) {

@@ -73,6 +73,7 @@ ShellRoot {
     property int refreshCalls: 0
     property var refreshForces: []
     property string startingJob: ""
+    property int activeJobs: 0
     property string actionError: ""
     property var backupCalls: []
     property string jobsFile: "/nonexistent/jobs.json"
@@ -413,6 +414,25 @@ ShellRoot {
           root.fail("Escape in the browser did not return to the job list")
           return
         }
+        var retryJobs = JSON.parse(JSON.stringify(fakeService.jobs))
+        retryJobs[1].service.active = true
+        fakeService.jobs = retryJobs
+        fakeService.activeJobs = 1
+        root.stage = 50
+        return
+      }
+
+      if (root.stage === 50) {
+        var retryButton = root.findByName(livePanel.jobCard("dropbox"), "backupButton-dropbox")
+        if (!retryButton || retryButton.text !== "Backing up..." || !retryButton.iconSpinning) {
+          root.fail("a retry of a failed job was not shown as running")
+          return
+        }
+        if (root.barButton.text !== "󰑐") {
+          root.fail("the bar did not show a running retry of a failed job")
+          return
+        }
+        fakeService.activeJobs = 0
         fakeService.overallStatus = "running"
         root.rotationStart = root.barButton.textRotation
         root.stage = 5

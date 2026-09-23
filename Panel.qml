@@ -95,12 +95,12 @@ Panel {
   }
 
   function backupBusy(job) {
-    return !!job && (job.status === "running"
-      || (!!resticService && resticService.startingJob === String(job.id)))
+    return Model.serviceActive(job) || job.status === "running"
+      || (!!resticService && resticService.startingJob === String(job.id))
   }
 
   function backupLabel(job) {
-    if (job && job.status === "running") return "Backing up..."
+    if (Model.serviceActive(job) || job.status === "running") return "Backing up..."
     return backupBusy(job) ? "Starting..." : "Back up now"
   }
 

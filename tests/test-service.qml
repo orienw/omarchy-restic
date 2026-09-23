@@ -152,6 +152,28 @@ ShellRoot {
            service: {unit: "omarchy-restic-test-busy.service", active: true}}
         ]
       }))
+      service.applyReport(JSON.stringify({
+        schemaVersion: 1, generatedAt: new Date().toISOString(), overallStatus: "attention",
+        summary: {jobs: 1, healthy: 0, running: 0, attention: 1, unknown: 0},
+        config: {status: "ready", error: ""},
+        jobs: [{id: "retry", name: "Retry", status: "attention",
+          service: {unit: "restic-retry.service", active: true}}]
+      }))
+      if (service.activeJobs !== 1 || service.refreshTimerInterval !== 10000) {
+        root.fail("a retry of a failed job did not poll as running")
+        return
+      }
+      service.applyReport(JSON.stringify({
+        schemaVersion: 1, generatedAt: new Date().toISOString(), overallStatus: "healthy",
+        summary: {jobs: 2, healthy: 1, running: 1, attention: 0, unknown: 0},
+        config: {status: "ready", error: ""},
+        jobs: [
+          {id: "home", name: "Home", status: "healthy",
+           service: {unit: "omarchy-restic-test-missing.service", active: false}},
+          {id: "busy", name: "Busy", status: "running",
+           service: {unit: "omarchy-restic-test-busy.service", active: true}}
+        ]
+      }))
       if (service.backupNow("missing") !== "unavailable" || service.backupNow("busy") !== "unavailable") {
         root.fail("backup started for a missing or running job")
         return

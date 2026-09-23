@@ -56,6 +56,8 @@ Item {
     ? "unknown" : String(report.overallStatus || "unknown")
   readonly property int attentionJobs: report && report.summary ? Number(report.summary.attention || 0) : 0
   readonly property int runningJobs: report && report.summary ? Number(report.summary.running || 0) : 0
+  readonly property int activeJobs: Model.activeCount(jobs)
+  readonly property int refreshTimerInterval: activeJobs > 0 ? 10000 : refreshIntervalSec * 1000
   readonly property string generatedAt: report ? String(report.generatedAt || "") : ""
   readonly property string configError: report && report.config ? String(report.config.error || "") : ""
 
@@ -272,7 +274,7 @@ Item {
   Component.onCompleted: Qt.callLater(initialize)
 
   Timer {
-    interval: root.runningJobs > 0 ? 10000 : root.refreshIntervalSec * 1000
+    interval: root.refreshTimerInterval
     repeat: true
     running: root.initialized
     onTriggered: root.refresh(false)
