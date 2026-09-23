@@ -134,6 +134,23 @@ ShellRoot {
         root.fail("real report while refreshing should keep job counts")
         return
       }
+      var backupJobs = [
+        { id: "home", status: "healthy", service: { unit: "restic-home.service", active: false } },
+        { id: "busy", status: "running", service: { unit: "restic-busy.service", active: true } },
+        { id: "bad", status: "healthy", service: { unit: "--now evil.service" } }
+      ]
+      if (Model.findJob(backupJobs, "busy") !== backupJobs[1] || Model.findJob(backupJobs, "missing") !== null) {
+        root.fail("job lookup did not match by id")
+        return
+      }
+      if (!Model.canBackUp(backupJobs[0]) || Model.canBackUp(backupJobs[1]) || Model.canBackUp(null)) {
+        root.fail("backup availability did not follow the service state")
+        return
+      }
+      if (Model.backupUnit(backupJobs[2]) !== "" || Model.canBackUp(backupJobs[2])) {
+        root.fail("an invalid unit name was accepted for a backup start")
+        return
+      }
       console.log("model tests passed")
       Qt.quit()
     }

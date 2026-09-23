@@ -72,6 +72,9 @@ ShellRoot {
     property string generatedAt: "2026-08-17T12:00:00Z"
     property int refreshCalls: 0
     property var refreshForces: []
+    property string startingJob: ""
+    property string actionError: ""
+    property var backupCalls: []
     property var report: ({
       schemaVersion: 1,
       generatedAt: generatedAt,
@@ -85,7 +88,7 @@ ShellRoot {
         name: "Home",
         status: "healthy",
         statusText: "Last run completed successfully",
-        service: { lastRun: { finishedAt: "2026-08-17T11:00:00Z", durationSec: 3, result: "success" } },
+        service: { unit: "restic-home.service", lastRun: { finishedAt: "2026-08-17T11:00:00Z", durationSec: 3, result: "success" } },
         timer: { nextRunAt: "2026-08-18T03:30:00Z" },
         repository: {
           status: "ready",
@@ -106,7 +109,7 @@ ShellRoot {
         name: "<b>NAME_LITERAL</b>",
         status: "attention",
         statusText: "Last run failed <i>STATUS_LITERAL</i>",
-        service: { lastRun: { finishedAt: "2026-08-17T10:55:00Z", durationSec: 4, result: "failed" } },
+        service: { unit: "restic-dropbox.service", lastRun: { finishedAt: "2026-08-17T10:55:00Z", durationSec: 4, result: "failed" } },
         timer: { nextRunAt: "2026-08-18T03:50:00Z" },
         repository: { status: "stale", checkedAt: "2026-08-17T10:00:00Z", snapshotCount: 2, latestSnapshot: null, stats: {} },
         integrity: { status: "not-configured", lastSuccessAt: null },
@@ -118,6 +121,11 @@ ShellRoot {
       refreshCalls++
       refreshForces = refreshForces.concat([forceRepositories === true])
       return forceRepositories ? "forced" : "started"
+    }
+
+    function backupNow(jobId) {
+      backupCalls = backupCalls.concat([jobId])
+      return "started"
     }
   }
 
@@ -288,6 +296,37 @@ ShellRoot {
           root.fail("the R key did not force a repository refresh")
           return
         }
+        var backupButton = root.findByName(panel.jobCard("home"), "backupButton-home")
+        if (!backupButton || !backupButton.enabled || backupButton.text !== "Back up now") {
+          root.fail("the backup button was not offered for an idle job")
+          return
+        }
+        if (!events.keyClickChar("b", Qt.NoModifier, -1)) {
+          root.fail("the panel window did not accept the backup key")
+          return
+        }
+        if (fakeService.backupCalls.length !== 0) {
+          root.fail("the backup key acted without a selected job")
+          return
+        }
+        events.keyClick(Qt.Key_Down, Qt.NoModifier, -1)
+        events.keyClickChar("b", Qt.NoModifier, -1)
+        root.stage = 45
+        return
+      }
+
+      if (root.stage === 45) {
+        if (fakeService.backupCalls.join() !== "home") {
+          root.fail("the backup key did not start the selected job")
+          return
+        }
+        fakeService.startingJob = "home"
+        var startingButton = root.findByName(panel.jobCard("home"), "backupButton-home")
+        if (startingButton.enabled || startingButton.text !== "Starting...") {
+          root.fail("a starting job still offered another backup")
+          return
+        }
+        fakeService.startingJob = ""
         fakeService.overallStatus = "running"
         root.rotationStart = root.barButton.textRotation
         root.stage = 5

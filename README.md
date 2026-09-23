@@ -1,8 +1,6 @@
 # Restic for Omarchy
 
-A read-only Omarchy shell plugin for monitoring restic jobs, schedules, repository metadata, and optional integrity checks.
-
-It tells you whether your backups are running.
+An Omarchy shell plugin for the restic backups you already run. It finds your existing restic systemd jobs, tells you whether they are working, and starts one on demand.
 
 ![Restic status panel with sample data](preview.png)
 
@@ -15,6 +13,7 @@ It tells you whether your backups are running.
 - Repository reachability and cache freshness
 - Optional integrity-check service health
 - Redacted recent logs when a job needs attention
+- A **Back up now** action that starts the job's own systemd service
 
 Health follows completed systemd runs, not snapshot age. This matters when a backup uses `--skip-if-unchanged`, because a successful unchanged run intentionally creates no snapshot. If no run history survives, the timer's last trigger time is used instead.
 
@@ -24,7 +23,7 @@ Repository statistics are supplementary. If snapshots can be read but the stats 
 
 ## Safety boundary
 
-The plugin is read-only. It runs only:
+The plugin never changes your repository or backup configuration. For status it runs only:
 
 - `systemctl --user show`
 - `systemctl --user list-unit-files`
@@ -33,11 +32,13 @@ The plugin is read-only. It runs only:
 - `restic snapshots --json`
 - `restic stats --json --mode raw-data`
 
+**Back up now** runs `systemctl --user start --no-block` on the job's existing backup service, the same thing its timer does. It is unavailable while that job is running. While any job runs, status refreshes every 10 seconds so the result appears promptly.
+
 Discovery inspects effective user-unit properties, including drop-ins, and reads referenced environment files and local wrapper scripts as plain text. It never sources them. Environment files override unit environment settings in their declared order.
 
 Repository commands use normal restic locking and are deferred while the matching service is active. The lock protects the race if a job starts between checks. Successful metadata is cached for later display and refreshed after each completed backup run. After a failed refresh, the plugin waits one repository refresh interval before trying again, unless a refresh is forced. Cache directories use mode `0700`, cache files use mode `0600`, and restic gets a private cache directory under the plugin cache.
 
-The plugin never uses `--no-lock`, reads password contents itself, starts jobs, prunes snapshots, unlocks repositories, or changes restic configuration.
+The plugin never uses `--no-lock`, reads password contents itself, prunes snapshots, unlocks repositories, or changes restic configuration.
 
 ## Requirements
 
@@ -122,6 +123,7 @@ Paths expand `~` and environment variables. Backend credentials needed by restic
 - Middle click refreshes status without forcing a repository query.
 - Right click forces a read-only repository refresh.
 - Press `R` in the panel to force a repository refresh.
+- Press `↑`/`↓` or `j`/`k` to select a job, then `B` to back it up. With a single job, `B` needs no selection.
 
 ## Update
 
@@ -139,4 +141,4 @@ Removal only removes the Omarchy shell integration. It does not stop or change b
 
 ## Not included
 
-Notifications and a guarded `Run now` action may come later. Repository creation, prune, unlock, retention editing, and restore are out of scope; use restic directly.
+Notifications may come later. Repository creation, prune, unlock, retention editing, and restore are out of scope; use restic directly.

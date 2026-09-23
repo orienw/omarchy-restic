@@ -16,6 +16,7 @@ Panel {
   property var hostWidget: null
   property double nowMs: Date.now()
   property var detailsOverrides: ({})
+  property int cursorIndex: -1
 
   readonly property var barIdentity: hostWidget || root
   readonly property var resticService: bar && bar.shell
@@ -51,6 +52,37 @@ Panel {
     if (resticService) resticService.refresh(true)
   }
 
+  function targetJob() {
+    if (cursorIndex >= 0 && cursorIndex < jobs.length) return jobs[cursorIndex]
+    return jobs.length === 1 ? jobs[0] : null
+  }
+
+  function moveCursor(delta) {
+    if (jobs.length === 0) return
+    cursorIndex = cursorIndex < 0
+      ? (delta > 0 ? 0 : jobs.length - 1)
+      : Math.max(0, Math.min(jobs.length - 1, cursorIndex + delta))
+    var card = jobRepeater.itemAt(cursorIndex)
+    if (!card) return
+    if (card.y < flick.contentY) flick.contentY = card.y
+    else if (card.y + card.height > flick.contentY + flick.height)
+      flick.contentY = card.y + card.height - flick.height
+  }
+
+  function backUp(job) {
+    if (resticService && job) resticService.backupNow(job.id)
+  }
+
+  function backupBusy(job) {
+    return !!job && (job.status === "running"
+      || (!!resticService && resticService.startingJob === String(job.id)))
+  }
+
+  function backupLabel(job) {
+    if (job && job.status === "running") return "Backing up..."
+    return backupBusy(job) ? "Starting..." : "Back up now"
+  }
+
   function jobCard(jobId) {
     for (var i = 0; i < jobRepeater.count; i++) {
       var card = jobRepeater.itemAt(i)
@@ -84,11 +116,14 @@ Panel {
       onActivateRequested: root.refreshRepositories()
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
+      onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveCursor(dy) }
       onTextKey: function(text) {
         if (text === "r" || text === "R") root.refreshRepositories()
+        else if (text === "b" || text === "B") root.backUp(root.targetJob())
       }
 
       Flickable {
+        id: flick
         anchors.fill: parent
         contentWidth: width
         contentHeight: content.implicitHeight
@@ -135,6 +170,17 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
+          Text {
+            textFormat: Text.PlainText
+            visible: text !== ""
+            width: parent.width
+            text: root.resticService ? root.resticService.actionError : ""
+            color: root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
           BorderSurface {
             visible: root.resticService && root.resticService.configError !== ""
             width: parent.width
@@ -161,9 +207,10 @@ Panel {
             id: jobRepeater
             model: root.jobs
 
-            delegate: BorderSurface {
+            delegate: CursorSurface {
               id: jobCard
               required property var modelData
+              required property int index
               property var job: modelData
               property bool detailsExpanded: root.initialDetails(job)
 
@@ -174,9 +221,9 @@ Panel {
 
               width: content.width
               implicitHeight: jobContent.implicitHeight + Style.space(20)
-              color: "transparent"
-              borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
-              radius: Style.cornerRadius
+              bordered: true
+              hasCursor: index === root.cursorIndex
+              foreground: root.foreground
 
               Column {
                 id: jobContent
@@ -269,6 +316,21 @@ Panel {
                   InfoPair { label: "Raw data"; value: Model.rawData(jobCard.job) }
                   InfoPair { label: "Repository"; value: Model.repositoryState(jobCard.job, root.nowMs) }
                   InfoPair { label: "Integrity"; value: Model.integrityState(jobCard.job, root.nowMs) }
+                }
+
+                Button {
+                  objectName: "backupButton-" + String(jobCard.job.id || "")
+                  text: root.backupLabel(jobCard.job)
+                  iconText: "󰁯"
+                  iconSpinning: root.backupBusy(jobCard.job)
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  bordered: true
+                  enabled: Model.canBackUp(jobCard.job)
+                    && !!root.resticService && root.resticService.startingJob === ""
+                  opacity: enabled || root.backupBusy(jobCard.job) ? 1 : 0.5
+                  onClicked: root.backUp(jobCard.job)
                 }
               }
             }

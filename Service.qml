@@ -22,6 +22,9 @@ Item {
   property bool initialized: false
   property bool refreshing: false
   property bool forcePending: false
+  property bool refreshPending: false
+  property string startingJob: ""
+  property string actionError: ""
   property var report: ({
     schemaVersion: 1,
     generatedAt: null,
@@ -51,6 +54,10 @@ Item {
   property bool _stderrDone: false
   property bool _exited: false
   property int _exitCode: 0
+  property string _startStderr: ""
+  property bool _startStderrDone: false
+  property bool _startExited: false
+  property int _startExitCode: 0
 
   function findSettings() {
     var config = shell && shell.shellConfig ? shell.shellConfig : null
@@ -95,6 +102,7 @@ Item {
       return "busy"
     }
 
+    refreshPending = false
     _stdout = ""
     _stderr = ""
     _stdoutDone = false
@@ -137,10 +145,37 @@ Item {
       _collectorError = elideError(_stderr || "Restic status collector failed with exit " + _exitCode)
     else if (!applyReport(_stdout) && _stderr !== "")
       _collectorError = elideError(_stderr)
-    if (forcePending) {
+    if (forcePending || refreshPending) {
+      var force = forcePending
       forcePending = false
-      Qt.callLater(function() { root.refresh(true) })
+      Qt.callLater(function() { root.refresh(force) })
     }
+  }
+
+  function backupNow(jobId) {
+    var job = Model.findJob(jobs, jobId)
+    if (!Model.canBackUp(job) || starter.running) return "unavailable"
+    actionError = ""
+    startingJob = String(job.id)
+    _startStderr = ""
+    _startStderrDone = false
+    _startExited = false
+    starter.command = ["systemctl", "--user", "start", "--no-block", "--", Model.backupUnit(job)]
+    starter.running = true
+    return "started"
+  }
+
+  function _finishStart() {
+    if (!_startStderrDone || !_startExited) return
+    if (_startExitCode !== 0) {
+      var job = Model.findJob(jobs, startingJob)
+      var name = job ? String(job.name || job.id) : startingJob
+      actionError = elideError("Could not start " + name + ": "
+        + (_startStderr || "systemctl exited with " + _startExitCode))
+    }
+    startingJob = ""
+    refreshPending = true
+    refresh(false)
   }
 
   onManifestChanged: Qt.callLater(initialize)
@@ -150,7 +185,7 @@ Item {
   Component.onCompleted: Qt.callLater(initialize)
 
   Timer {
-    interval: root.refreshIntervalSec * 1000
+    interval: root.runningJobs > 0 ? 10000 : root.refreshIntervalSec * 1000
     repeat: true
     running: root.initialized
     onTriggered: root.refresh(false)
@@ -194,6 +229,25 @@ Item {
       root._exitCode = exitCode
       root._exited = true
       root._finalize()
+    }
+  }
+
+  Process {
+    id: starter
+    running: false
+    command: []
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root._startStderr = text
+        root._startStderrDone = true
+        root._finishStart()
+      }
+    }
+    onExited: function(exitCode) {
+      root._startExitCode = exitCode
+      root._startExited = true
+      root._finishStart()
     }
   }
 }

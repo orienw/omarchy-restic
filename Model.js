@@ -179,3 +179,20 @@ function reportMeta(report, refreshing) {
     return count(jobs, "job", "jobs") + " checked"
   return "Verification incomplete"
 }
+
+function findJob(jobs, jobId) {
+  var list = Array.isArray(jobs) ? jobs : []
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && String(list[i].id || "") === String(jobId)) return list[i]
+  }
+  return null
+}
+
+function backupUnit(job) {
+  var unit = job && job.service ? String(job.service.unit || "") : ""
+  return /^[A-Za-z0-9_.:@-]+\.service$/.test(unit) ? unit : ""
+}
+
+function canBackUp(job) {
+  return backupUnit(job) !== "" && job.status !== "running" && !(job.service && job.service.active)
+}

@@ -90,6 +90,42 @@ ShellRoot {
         root.fail("fresh status did not recover after collection failure or expiry")
         return
       }
+      service.applyReport(JSON.stringify({
+        schemaVersion: 1, generatedAt: new Date().toISOString(), overallStatus: "healthy",
+        summary: {jobs: 2, healthy: 1, running: 1, attention: 0, unknown: 0},
+        config: {status: "ready", error: ""},
+        jobs: [
+          {id: "home", name: "Home", status: "healthy",
+           service: {unit: "omarchy-restic-test-missing.service", active: false}},
+          {id: "busy", name: "Busy", status: "running",
+           service: {unit: "omarchy-restic-test-busy.service", active: true}}
+        ]
+      }))
+      if (service.backupNow("missing") !== "unavailable" || service.backupNow("busy") !== "unavailable") {
+        root.fail("backup started for a missing or running job")
+        return
+      }
+      if (service.backupNow("home") !== "started" || service.startingJob !== "home"
+          || service.backupNow("home") !== "unavailable") {
+        root.fail("backup start was not tracked or allowed a duplicate start")
+        return
+      }
+      startTimer.start()
+    }
+  }
+
+  Timer {
+    id: startTimer
+    interval: 50
+    repeat: true
+    onTriggered: {
+      var service = serviceLoader.item
+      if (service.startingJob !== "") return
+      stop()
+      if (service.actionError.indexOf("Could not start Home") !== 0) {
+        root.fail("failed backup start was not reported: " + service.actionError)
+        return
+      }
       console.log("service tests passed")
       root.finished = true
       Qt.quit()
