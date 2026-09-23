@@ -235,7 +235,8 @@ class RollbackRunner(FakeRunner):
     def __init__(self, *, latest: str = "run2", journal_runs: tuple[str, ...] = ("run1", "run2"),
                  current_boot_runs: tuple[str, ...] | None = None, journal_error: bool = False,
                  fallback_error: bool = False, systemd_invocation: bool = True,
-                 seqnum_ids: dict[str, str] | None = None):
+                 seqnum_ids: dict[str, str] | None = None, active_journal: str = "journal",
+                 old_successes: int = 0):
         super().__init__()
         self.latest = latest
         self.journal_runs = journal_runs
@@ -244,6 +245,8 @@ class RollbackRunner(FakeRunner):
         self.fallback_error = fallback_error
         self.systemd_invocation = systemd_invocation
         self.seqnum_ids = seqnum_ids or {}
+        self.active_journal = active_journal
+        self.old_successes = old_successes
 
     # Journal sequence numbers follow write order whatever the clock says.
     RUNS = {
@@ -251,8 +254,17 @@ class RollbackRunner(FakeRunner):
         "run2": (NOW - timedelta(hours=1), "failed", 200),
     }
 
-    def journal_lines(self, runs: tuple[str, ...]) -> str:
+    def journal_lines(self, runs: tuple[str, ...], limit: int | None = None) -> str:
         lines = []
+        # An older journal whose clock ran ahead: its many successes sort after
+        # the newer journal's failure when journalctl merges by wall clock.
+        for index in range(self.old_successes if runs else 0):
+            finished = NOW + timedelta(minutes=index)
+            old = {"seqnum_id": "old-journal"}
+            lines.append(journal_entry(finished - timedelta(minutes=1), restic_status.UNIT_STARTING,
+                                       "Starting backup", f"old{index}", seqnum=10 + 2 * index, **old))
+            lines.append(journal_entry(finished, restic_status.UNIT_STARTED, "Backup completed", f"old{index}",
+                                       result="done", seqnum=11 + 2 * index, **old))
         for run in runs:
             finished, result, seqnum = self.RUNS[run]
             sequence = {"seqnum_id": self.seqnum_ids.get(run, "journal")}
@@ -264,6 +276,10 @@ class RollbackRunner(FakeRunner):
             else:
                 lines.append(journal_entry(finished, restic_status.UNIT_FAILED, "Backup failed", run,
                                            result="failed", seqnum=seqnum + 1, **sequence))
+        if self.old_successes:
+            lines = lines[2 * self.old_successes:] + lines[:2 * self.old_successes]
+        if limit is not None:
+            lines = lines[-limit:]
         return "\n".join(lines) + "\n"
 
     def run(self, command: list[str], *, timeout: int, env: dict[str, str] | None = None):
@@ -272,7 +288,12 @@ class RollbackRunner(FakeRunner):
             if self.journal_error or (self.fallback_error and "--boot=0" not in command):
                 return subprocess.CompletedProcess(command, 1, "", "Failed to open journal")
             runs = self.current_boot_runs if "--boot=0" in command else self.journal_runs
-            return subprocess.CompletedProcess(command, 0, self.journal_lines(runs), "")
+            limit = next((int(argument.split("=", 1)[1]) for argument in command if argument.startswith("--lines=")), None)
+            return subprocess.CompletedProcess(command, 0, self.journal_lines(runs, limit), "")
+        if command[0] == "journalctl" and "--lines=1" in command:
+            self.calls.append((command, env))
+            latest = json.dumps({"MESSAGE": "latest", "__SEQNUM_ID": self.active_journal, "__SEQNUM": "999"})
+            return subprocess.CompletedProcess(command, 0, latest + "\n", "")
         return super().run(command, timeout=timeout, env=env)
 
     def _systemctl(self, command: list[str], unit: str):
@@ -1014,9 +1035,19 @@ class ResticStatusTest(unittest.TestCase):
                 self.assertEqual(job["service"]["lastRun"]["invocationId"], "run2")
                 self.assertEqual(job["status"], "attention")
 
+    def test_the_journal_being_written_holds_the_newest_runs(self):
+        # 100 older successes whose clock ran ahead would fill an 80-entry
+        # tail; the failure in the journal now being written still wins.
+        runner = RollbackRunner(latest=None, journal_runs=("run2",), current_boot_runs=(),
+                                seqnum_ids={"run2": "new-journal"}, active_journal="new-journal", old_successes=100)
+        job = self.rollback_job(runner)
+        self.assertEqual(job["service"]["lastRun"]["invocationId"], "run2")
+        self.assertEqual(job["status"], "attention")
+
     def test_older_boots_in_unrelated_journals_are_not_guessed(self):
         runner = RollbackRunner(latest=None, journal_runs=("run2", "run1"), current_boot_runs=(),
-                                seqnum_ids={"run1": "old-journal", "run2": "new-journal"})
+                                seqnum_ids={"run1": "old-journal", "run2": "older-journal"},
+                                active_journal="new-journal")
         job = self.rollback_job(runner)
         self.assertEqual(job["status"], "unknown")
         self.assertIsNone(job["service"]["lastRun"])

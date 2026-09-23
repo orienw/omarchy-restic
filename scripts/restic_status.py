@@ -1294,17 +1294,25 @@ def parse_journal_runs(output: str) -> list[dict[str, Any]]:
     return sorted(completions.values(), key=lambda run: run["order"])
 
 
+# Only systemd's own start and finish messages, so reading a unit's whole
+# history stays small.
+LIFECYCLE_MATCHES = [
+    f"MESSAGE_ID={message_id}"
+    for message_id in (UNIT_STARTING, UNIT_STARTED, UNIT_SUCCESS, UNIT_FAILED, UNIT_FAILURE_RESULT)
+]
+
+
 def journal_runs(
-    unit: str, runner: Runner, timeout: int, boot: list[str]
+    unit: str, runner: Runner, timeout: int, scope: list[str]
 ) -> tuple[list[dict[str, Any]] | None, str]:
     command = [
         "journalctl",
         "--user",
         f"USER_UNIT={unit}",
-        *boot,
+        *LIFECYCLE_MATCHES,
+        *scope,
         "--no-pager",
         "--output=json",
-        "--lines=80",
     ]
     try:
         result = runner.run(command, timeout=timeout)
@@ -1315,15 +1323,36 @@ def journal_runs(
     return parse_journal_runs(result.stdout), ""
 
 
-# Journal sequence numbers follow write order across reboots whatever the
-# clock did, but only within one journal. Runs spread over several journals
-# cannot be put in order reliably, so they are not guessed at.
-def sequenced(runs: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
-    if runs is None or len({run["sequence"][0] for run in runs}) > 1:
+def active_journal(runner: Runner, timeout: int) -> str | None:
+    try:
+        result = runner.run(
+            ["journalctl", "--user", "--lines=1", "--no-pager", "--output=json"], timeout=timeout
+        )
+    except (OSError, subprocess.TimeoutExpired):
         return None
+    entries = parse_journal_lines(result.stdout) if result.returncode == 0 else []
+    return str(entries[-1].get("__SEQNUM_ID") or "") if entries else None
+
+
+def by_sequence(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if all(run["sequence"][1] is not None for run in runs):
         return sorted(runs, key=lambda run: run["sequence"][1])
     return runs
+
+
+# Journal sequence numbers follow write order across reboots whatever the
+# clock did, but only within one journal. The journal being written now is
+# the newest, so its runs come last. Runs spread over several older journals
+# cannot be put in order, so they are not guessed at: None when nothing newer
+# settles it, otherwise only the current journal's runs.
+def sequenced(runs: list[dict[str, Any]], active: str | None) -> list[dict[str, Any]] | None:
+    journals: dict[str, list[dict[str, Any]]] = {}
+    for run in runs:
+        journals.setdefault(run["sequence"][0], []).append(run)
+    newest = by_sequence(journals.pop(active, [])) if active is not None else []
+    if len(journals) > 1:
+        return newest or None
+    return by_sequence(next(iter(journals.values()), [])) + newest
 
 
 def bare_run(run: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1334,12 +1363,14 @@ def bare_run(run: dict[str, Any] | None) -> dict[str, Any] | None:
 # unit's runs in order, while boots' clocks can disagree. Older boots are read
 # only when this boot has no run or no success yet.
 def journal_history(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
-    current, error = journal_runs(unit, runner, timeout, ["--boot=0"])
+    current, error = journal_runs(unit, runner, timeout, ["--boot=0", "--lines=80"])
     runs = current or []
     successful = [run for run in runs if run.get("result") == "success"]
     if not runs or not successful:
+        # The whole history: a line limit could cut off the newest run when
+        # journalctl lists another journal's entries after it.
         earlier, earlier_error = journal_runs(unit, runner, timeout, [])
-        ordered = sequenced(earlier)
+        ordered = None if earlier is None else sequenced(earlier, active_journal(runner, timeout))
         if not runs and ordered is None:
             reason = error or earlier_error or "Run order across reboots is unclear"
             return {"available": False, "lastRun": None, "lastSuccessAt": None, "error": reason}
