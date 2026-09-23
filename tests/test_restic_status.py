@@ -877,6 +877,32 @@ class ResticStatusTest(unittest.TestCase):
         self.assertTrue(any("snapshots" in command for command, _ in recovered.calls))
         self.assertEqual(ready["jobs"][0]["repository"]["status"], "ready")
 
+    def test_completed_run_refreshes_fresh_repository_cache_once(self):
+        self.collect(FakeRunner())
+        later = NOW + timedelta(minutes=5)
+
+        unchanged = FakeRunner()
+        self.collect(unchanged, now=later)
+        self.assertFalse(any("snapshots" in command for command, _ in unchanged.calls))
+
+        finished = FakeRunner(history_age_hours=-2 / 60)
+        self.collect(finished, now=later)
+        self.assertTrue(any("snapshots" in command for command, _ in finished.calls))
+
+        settled = FakeRunner(history_age_hours=-2 / 60)
+        self.collect(settled, now=later + timedelta(minutes=1))
+        self.assertFalse(any("snapshots" in command for command, _ in settled.calls))
+
+    def test_failed_refresh_after_a_completed_run_still_backs_off(self):
+        self.collect(FakeRunner())
+        later = NOW + timedelta(minutes=5)
+        self.collect(FakeRunner(history_age_hours=-2 / 60, restic_error=1), now=later)
+
+        backed_off = FakeRunner(history_age_hours=-2 / 60)
+        report = self.collect(backed_off, now=later + timedelta(minutes=1))
+        self.assertEqual(report["jobs"][0]["repository"]["status"], "stale")
+        self.assertFalse(any("snapshots" in command for command, _ in backed_off.calls))
+
     def test_forced_repository_refresh_bypasses_failure_backoff(self):
         self.collect(FakeRunner())
         self.collect(FakeRunner(restic_error=1), force=True, now=NOW + timedelta(minutes=20))

@@ -1537,11 +1537,25 @@ def save_discovery_cache(
     write_cache(path, payload)
 
 
-def cache_is_fresh(cache: dict[str, Any] | None, now: datetime, max_age_seconds: int) -> bool:
+def cache_is_fresh(
+    cache: dict[str, Any] | None,
+    now: datetime,
+    max_age_seconds: int,
+    last_run_at: str | None = None,
+) -> bool:
     if not cache:
         return False
     checked = parse_iso(cache.get("checkedAt"))
-    return bool(checked and (now - checked).total_seconds() <= max_age_seconds)
+    return bool(
+        checked
+        and (now - checked).total_seconds() <= max_age_seconds
+        and not predates(checked, last_run_at)
+    )
+
+
+def predates(value: datetime | None, reference: str | None) -> bool:
+    finished = parse_iso(reference)
+    return bool(finished and value and value < finished)
 
 
 def repository_from_cache(cache: dict[str, Any], status: str, source: str, error: str = "") -> dict[str, Any]:
@@ -1625,6 +1639,7 @@ def collect_repository(
     runner: Runner,
     timeout: int,
     now: datetime,
+    last_run_at: str | None = None,
 ) -> dict[str, Any]:
     key = cache_key(job)
     path = cache_file(cache_dir, config_path, job["id"])
@@ -1641,7 +1656,7 @@ def collect_repository(
             return repository_from_cache(cached, "deferred", "cache", "Refresh deferred while backup is active")
         return repository_none("deferred", "Refresh deferred while backup is active")
 
-    if not force and cache_is_fresh(cached, now, cache_seconds):
+    if not force and cache_is_fresh(cached, now, cache_seconds, last_run_at):
         return repository_from_cache(
             cached,
             str(cached.get("status") or "ready"),
@@ -1655,6 +1670,7 @@ def collect_repository(
         and cached
         and attempted
         and (now - attempted).total_seconds() <= cache_seconds
+        and not predates(attempted, last_run_at)
     ):
         return repository_from_cache(
             cached,
@@ -1922,6 +1938,7 @@ def evaluate_job(
         runner=runner,
         timeout=timeout,
         now=now,
+        last_run_at=(service.get("lastRun") or {}).get("finishedAt"),
     )
     integrity = evaluate_integrity(job, runner, timeout, now)
     issues: list[dict[str, str]] = []
