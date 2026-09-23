@@ -17,7 +17,16 @@ Panel {
   property var hostWidget: null
   property double nowMs: Date.now()
   property var detailsOverrides: ({})
-  property int cursorIndex: -1
+  // The selected job by id, so a refresh that reorders or drops jobs can
+  // never point a key at a different job. A selected job that disappears
+  // targets nothing until the cursor moves.
+  property string cursorJobId: ""
+  readonly property int cursorIndex: {
+    for (var i = 0; cursorJobId !== "" && i < jobs.length; i++) {
+      if (String(jobs[i].id) === cursorJobId) return i
+    }
+    return -1
+  }
   property var browsingJob: null
   property alias snapshotBrowser: browser
 
@@ -57,16 +66,17 @@ Panel {
   }
 
   function targetJob() {
-    if (cursorIndex >= 0 && cursorIndex < jobs.length) return jobs[cursorIndex]
-    return jobs.length === 1 ? jobs[0] : null
+    if (cursorIndex >= 0) return jobs[cursorIndex]
+    return cursorJobId === "" && jobs.length === 1 ? jobs[0] : null
   }
 
   function moveCursor(delta) {
     if (jobs.length === 0) return
-    cursorIndex = cursorIndex < 0
+    var next = cursorIndex < 0
       ? (delta > 0 ? 0 : jobs.length - 1)
       : Math.max(0, Math.min(jobs.length - 1, cursorIndex + delta))
-    var card = jobRepeater.itemAt(cursorIndex)
+    cursorJobId = String(jobs[next].id)
+    var card = jobRepeater.itemAt(next)
     if (!card) return
     if (card.y < flick.contentY) flick.contentY = card.y
     else if (card.y + card.height > flick.contentY + flick.height)
@@ -87,7 +97,7 @@ Panel {
   function activate() {
     if (browsingJob) browser.openSelected()
     else if (cursorIndex >= 0) browse(targetJob())
-    else refreshRepositories()
+    else if (cursorJobId === "") refreshRepositories()
   }
 
   function backUp(job) {

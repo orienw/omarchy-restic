@@ -346,6 +346,12 @@ ShellRoot {
           return
         }
         fakeService.startingJob = ""
+        fakeService.jobs = [fakeService.jobs[1], fakeService.jobs[0]]
+        events.keyClickChar("b", Qt.NoModifier, -1)
+        if (fakeService.backupCalls.join() !== "home,home") {
+          root.fail("reordered jobs moved the selection to another job: " + fakeService.backupCalls.join())
+          return
+        }
         if (!events.keyClick(Qt.Key_Return, Qt.NoModifier, -1)) {
           root.fail("the panel window did not accept Enter")
           return
@@ -415,7 +421,7 @@ ShellRoot {
           return
         }
         var retryJobs = JSON.parse(JSON.stringify(fakeService.jobs))
-        retryJobs[1].service.active = true
+        retryJobs.forEach(function(job) { if (job.id === "dropbox") job.service.active = true })
         fakeService.jobs = retryJobs
         fakeService.activeJobs = 1
         root.stage = 50
@@ -432,6 +438,14 @@ ShellRoot {
           root.fail("the bar did not show a running retry of a failed job")
           return
         }
+        var bothJobs = fakeService.jobs
+        fakeService.jobs = bothJobs.filter(function(job) { return job.id !== "home" })
+        events.keyClickChar("b", Qt.NoModifier, -1)
+        if (fakeService.backupCalls.join() !== "home,home") {
+          root.fail("a removed selection fell through to another job: " + fakeService.backupCalls.join())
+          return
+        }
+        fakeService.jobs = bothJobs
         fakeService.activeJobs = 0
         fakeService.overallStatus = "running"
         root.rotationStart = root.barButton.textRotation
