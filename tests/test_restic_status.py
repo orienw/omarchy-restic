@@ -32,18 +32,17 @@ def journal_entry(
     message: str,
     invocation: str = "run-1",
     result: str | None = None,
-    monotonic_seconds: float | None = None,
-    boot: str | None = None,
+    seqnum: int | None = None,
+    seqnum_id: str | None = None,
 ) -> str:
     entry = {
         "__REALTIME_TIMESTAMP": str(int(timestamp.timestamp() * 1_000_000)),
         "USER_INVOCATION_ID": invocation,
         "MESSAGE": message,
     }
-    if monotonic_seconds is not None:
-        entry["__MONOTONIC_TIMESTAMP"] = str(int(monotonic_seconds * 1_000_000))
-    if boot:
-        entry["_BOOT_ID"] = boot
+    if seqnum is not None:
+        entry["__SEQNUM"] = str(seqnum)
+        entry["__SEQNUM_ID"] = seqnum_id or "journal"
     if message_id:
         entry["MESSAGE_ID"] = message_id
     if result:
@@ -235,35 +234,42 @@ class RollbackRunner(FakeRunner):
 
     def __init__(self, *, latest: str = "run2", journal_runs: tuple[str, ...] = ("run1", "run2"),
                  current_boot_runs: tuple[str, ...] | None = None, journal_error: bool = False,
-                 systemd_invocation: bool = True):
+                 fallback_error: bool = False, systemd_invocation: bool = True,
+                 seqnum_ids: dict[str, str] | None = None):
         super().__init__()
         self.latest = latest
         self.journal_runs = journal_runs
         self.current_boot_runs = journal_runs if current_boot_runs is None else current_boot_runs
         self.journal_error = journal_error
+        self.fallback_error = fallback_error
         self.systemd_invocation = systemd_invocation
+        self.seqnum_ids = seqnum_ids or {}
 
+    # Journal sequence numbers follow write order whatever the clock says.
     RUNS = {
-        "run1": (NOW, "success"),
-        "run2": (NOW - timedelta(hours=1), "failed"),
+        "run1": (NOW, "success", 100),
+        "run2": (NOW - timedelta(hours=1), "failed", 200),
     }
 
     def journal_lines(self, runs: tuple[str, ...]) -> str:
         lines = []
         for run in runs:
-            finished, result = self.RUNS[run]
+            finished, result, seqnum = self.RUNS[run]
+            sequence = {"seqnum_id": self.seqnum_ids.get(run, "journal")}
             lines.append(journal_entry(finished - timedelta(minutes=2), restic_status.UNIT_STARTING,
-                                       "Starting backup", run))
+                                       "Starting backup", run, seqnum=seqnum, **sequence))
             if result == "success":
-                lines.append(journal_entry(finished, restic_status.UNIT_STARTED, "Backup completed", run, result="done"))
+                lines.append(journal_entry(finished, restic_status.UNIT_STARTED, "Backup completed", run,
+                                           result="done", seqnum=seqnum + 1, **sequence))
             else:
-                lines.append(journal_entry(finished, restic_status.UNIT_FAILED, "Backup failed", run, result="failed"))
+                lines.append(journal_entry(finished, restic_status.UNIT_FAILED, "Backup failed", run,
+                                           result="failed", seqnum=seqnum + 1, **sequence))
         return "\n".join(lines) + "\n"
 
     def run(self, command: list[str], *, timeout: int, env: dict[str, str] | None = None):
         if command[0] == "journalctl" and any(argument.startswith("USER_UNIT=") for argument in command):
             self.calls.append((command, env))
-            if self.journal_error:
+            if self.journal_error or (self.fallback_error and "--boot=0" not in command):
                 return subprocess.CompletedProcess(command, 1, "", "Failed to open journal")
             runs = self.current_boot_runs if "--boot=0" in command else self.journal_runs
             return subprocess.CompletedProcess(command, 0, self.journal_lines(runs), "")
@@ -277,7 +283,7 @@ class RollbackRunner(FakeRunner):
                 "LoadState=loaded", "ActiveState=inactive", "SubState=dead", "Result=success",
                 "ExecMainCode=0", "ExecMainStatus=0", "ExecMainStartTimestamp=", "ExecMainExitTimestamp=",
             ]), "")
-        finished, result = self.RUNS[self.latest]
+        finished, result, _ = self.RUNS[self.latest]
         failed = result == "failed"
         return subprocess.CompletedProcess(command, 0, "\n".join([
             "LoadState=loaded",
@@ -998,6 +1004,28 @@ class ResticStatusTest(unittest.TestCase):
         job = self.rollback_job(runner)
         self.assertEqual(job["service"]["lastRun"]["invocationId"], "run2")
         self.assertEqual(job["service"]["lastSuccessAt"], restic_status.isoformat(NOW))
+
+    def test_older_boots_follow_journal_sequence_not_clocks(self):
+        # Boot A succeeded, boot B failed after a clock step, boot C (now) has
+        # not run yet and systemd kept no state.
+        for listed in (("run1", "run2"), ("run2", "run1")):
+            with self.subTest(listed=listed):
+                job = self.rollback_job(RollbackRunner(latest=None, journal_runs=listed, current_boot_runs=()))
+                self.assertEqual(job["service"]["lastRun"]["invocationId"], "run2")
+                self.assertEqual(job["status"], "attention")
+
+    def test_older_boots_in_unrelated_journals_are_not_guessed(self):
+        runner = RollbackRunner(latest=None, journal_runs=("run2", "run1"), current_boot_runs=(),
+                                seqnum_ids={"run1": "old-journal", "run2": "new-journal"})
+        job = self.rollback_job(runner)
+        self.assertEqual(job["status"], "unknown")
+        self.assertIsNone(job["service"]["lastRun"])
+        self.assertIn("run-history-unavailable", [issue["code"] for issue in job["issues"]])
+
+    def test_an_unreadable_older_history_is_unknown_not_empty(self):
+        job = self.rollback_job(RollbackRunner(latest=None, current_boot_runs=(), fallback_error=True))
+        self.assertEqual(job["status"], "unknown")
+        self.assertIn("run-history-unavailable", [issue["code"] for issue in job["issues"]])
 
     def test_unknown_run_state_is_reported_instead_of_guessed(self):
         job = self.rollback_job(RollbackRunner(latest=None, journal_error=True))

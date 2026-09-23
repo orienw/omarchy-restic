@@ -1283,12 +1283,15 @@ def parse_journal_runs(output: str) -> list[dict[str, Any]]:
             invocation["durationSec"] = elapsed_seconds(
                 invocation.get("startedAt"), timestamp
             )
-            completions[invocation_id] = dict(invocation, order=order)
+            try:
+                seqnum: int | None = int(str(entry.get("__SEQNUM")))
+            except ValueError:
+                seqnum = None
+            completions[invocation_id] = dict(
+                invocation, order=order, sequence=(str(entry.get("__SEQNUM_ID") or ""), seqnum)
+            )
 
-    runs = sorted(completions.values(), key=lambda run: run["order"])
-    for run in runs:
-        del run["order"]
-    return runs
+    return sorted(completions.values(), key=lambda run: run["order"])
 
 
 def journal_runs(
@@ -1312,23 +1315,39 @@ def journal_runs(
     return parse_journal_runs(result.stdout), ""
 
 
-# The current boot decides the latest run: when boots' clocks disagree,
-# journalctl can list an older boot's entries after this one's. Older boots
-# are read only when this boot has no run or no success yet.
+# Journal sequence numbers follow write order across reboots whatever the
+# clock did, but only within one journal. Runs spread over several journals
+# cannot be put in order reliably, so they are not guessed at.
+def sequenced(runs: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+    if runs is None or len({run["sequence"][0] for run in runs}) > 1:
+        return None
+    if all(run["sequence"][1] is not None for run in runs):
+        return sorted(runs, key=lambda run: run["sequence"][1])
+    return runs
+
+
+def bare_run(run: dict[str, Any] | None) -> dict[str, Any] | None:
+    return {key: value for key, value in run.items() if key not in {"order", "sequence"}} if run else None
+
+
+# The current boot decides the latest run: within a boot the journal keeps a
+# unit's runs in order, while boots' clocks can disagree. Older boots are read
+# only when this boot has no run or no success yet.
 def journal_history(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
     current, error = journal_runs(unit, runner, timeout, ["--boot=0"])
     runs = current or []
     successful = [run for run in runs if run.get("result") == "success"]
     if not runs or not successful:
         earlier, earlier_error = journal_runs(unit, runner, timeout, [])
-        if current is None and earlier is None:
-            return {"available": False, "lastRun": None, "lastSuccessAt": None, "error": error or earlier_error}
-        earlier = earlier or []
-        runs = runs or earlier
-        successful = successful or [run for run in earlier if run.get("result") == "success"]
+        ordered = sequenced(earlier)
+        if not runs and ordered is None:
+            reason = error or earlier_error or "Run order across reboots is unclear"
+            return {"available": False, "lastRun": None, "lastSuccessAt": None, "error": reason}
+        runs = runs or ordered or []
+        successful = successful or [run for run in ordered or [] if run.get("result") == "success"]
     return {
         "available": True,
-        "lastRun": runs[-1] if runs else None,
+        "lastRun": bare_run(runs[-1]) if runs else None,
         "lastSuccessAt": successful[-1]["finishedAt"] if successful else None,
         "error": "",
     }
