@@ -255,17 +255,34 @@ def signal_group(process: subprocess.Popen[bytes], sig: int) -> None:
         pass
 
 
+def group_alive(process: subprocess.Popen[bytes]) -> bool:
+    process.poll()  # Reap the leader so its zombie does not count.
+    try:
+        os.killpg(process.pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+
+
+# Waits for every process in the group, not just the leader: a wrapper can
+# exit at once while the restic it started is still releasing its lock.
+def wait_for_group(process: subprocess.Popen[bytes], timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while group_alive(process):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+# One SIGTERM only: restic treats a second signal as "stop cleaning up".
 def stop_process_group(process: subprocess.Popen[bytes], grace: float) -> None:
     signal_group(process, signal.SIGTERM)
-    try:
-        process.wait(timeout=grace)
-    except subprocess.TimeoutExpired:
-        pass
-    signal_group(process, signal.SIGKILL)
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        pass
+    if not wait_for_group(process, grace):
+        signal_group(process, signal.SIGKILL)
+        wait_for_group(process, 5)
 
 
 def read_output(handle: IO[bytes]) -> str:

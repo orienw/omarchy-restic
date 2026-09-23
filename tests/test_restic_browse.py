@@ -29,7 +29,7 @@ if mode == "password":
     print(json.dumps({"message_type": "exit_error", "code": 12, "message": "Fatal: wrong password"}))
     sys.exit(12)
 print(json.dumps({"message_type": "status", "percent_done": 0.5}), flush=True)
-if mode in ("slow", "wrapper"):
+if mode in ("slow", "wrapper", "wrapper-cleanup"):
     import signal, subprocess
     marker = os.environ.get("FAKE_RESTIC_TERM_MARKER")
     def stop(signum, frame):
@@ -42,6 +42,16 @@ if mode in ("slow", "wrapper"):
         Path(os.environ["FAKE_RESTIC_CHILD"]).write_text(str(child.pid))
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         child.wait()
+    if mode == "wrapper-cleanup":
+        # The wrapper exits at once; its child needs a second to clean up.
+        cleanup = "; ".join([
+            "import signal, sys, time",
+            "from pathlib import Path",
+            "signal.signal(signal.SIGTERM, lambda *_: (time.sleep(1), Path(sys.argv[1]).write_text('clean'), sys.exit(0)))",
+            "time.sleep(60)",
+        ])
+        subprocess.Popen([sys.executable, "-c", cleanup, os.environ["FAKE_RESTIC_CLEANED"]])
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     time.sleep(30)
 target = Path(args[args.index("--target") + 1])
 if "--include" in args:
@@ -278,6 +288,16 @@ class ResticBrowseTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 30)
         self.assertTrue(self.wait_for(lambda: not alive(child)))
 
+    def test_cancel_waits_for_restic_cleanup_after_the_wrapper_exits(self):
+        cleaned = self.root / "cleaned"
+        process = self.start_restore("wrapper-cleanup", FAKE_RESTIC_CLEANED=str(cleaned))
+        time.sleep(0.5)
+        process.send_signal(signal.SIGTERM)
+        event = json.loads(process.stdout.readline())
+        self.assertEqual(process.wait(timeout=20), 0)
+        self.assertEqual(event["type"], "cancelled")
+        self.assertTrue(cleaned.exists(), "restic was killed before it finished cleaning up")
+
     def test_killed_helper_asks_restic_to_stop(self):
         marker = self.root / "terminated"
         process = self.start_restore("slow", FAKE_RESTIC_TERM_MARKER=str(marker))
@@ -326,14 +346,21 @@ class ResticRoundTripTest(unittest.TestCase):
             self.assertFalse((root / "Restored").exists() and any((root / "Restored").iterdir()))
 
     def test_killed_restore_releases_the_repository_lock(self):
+        self.kill_restore_and_expect_no_lock(exec_restic=True, size=8 * 1024 * 1024)
+
+    def test_killed_restore_under_a_non_exec_wrapper_finishes_and_releases_the_lock(self):
+        self.kill_restore_and_expect_no_lock(exec_restic=False, size=1024 * 1024)
+
+    def kill_restore_and_expect_no_lock(self, *, exec_restic: bool, size: int) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "source").mkdir()
-            (root / "source" / "big.bin").write_bytes(os.urandom(8 * 1024 * 1024))
+            (root / "source" / "big.bin").write_bytes(os.urandom(size))
             (root / "repository").write_text(str(root / "repo"))
             (root / "password").write_text("secret")
             slow = root / "slow-restic"
-            slow.write_text('#!/bin/sh\nexec restic --limit-download 256 "$@"\n')
+            launch = "exec restic" if exec_restic else "restic"
+            slow.write_text(f'#!/bin/sh\n{launch} --limit-download 256 "$@"\n')
             slow.chmod(0o755)
             config = root / "jobs.json"
             config.write_text(json.dumps({"schemaVersion": 1, "jobs": [{
@@ -370,7 +397,7 @@ class ResticRoundTripTest(unittest.TestCase):
                 helper.kill()
                 helper.wait(timeout=10)
 
-            deadline = time.monotonic() + 20
+            deadline = time.monotonic() + 30
             while locks() and time.monotonic() < deadline:
                 time.sleep(0.2)
             self.assertEqual(locks(), [])

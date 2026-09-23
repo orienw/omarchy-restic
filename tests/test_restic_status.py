@@ -1220,6 +1220,23 @@ class ResticStatusTest(unittest.TestCase):
             time.sleep(0.05)
         self.assertTrue(marker.exists())
 
+    def test_runner_timeout_lets_the_whole_group_finish_cleanup(self):
+        cleaned = self.root / "cleaned"
+        child = "; ".join([
+            "import signal, sys, time",
+            "from pathlib import Path",
+            f"signal.signal(signal.SIGTERM, lambda *_: (time.sleep(1), Path({str(cleaned)!r}).write_text('x'), sys.exit(0)))",
+            "time.sleep(60)",
+        ])
+        leader = "; ".join([
+            "import subprocess, sys, time",
+            f"subprocess.Popen([sys.executable, '-c', {child!r}])",
+            "time.sleep(60)",
+        ])
+        with self.assertRaises(subprocess.TimeoutExpired):
+            restic_status.Runner().run([sys.executable, "-c", leader], timeout=1)
+        self.assertTrue(cleaned.exists(), "the group was killed before its cleanup finished")
+
     def test_runner_kills_descendants_and_bounds_pipe_cleanup(self):
         for detached in (False, True):
             with self.subTest(detached=detached):

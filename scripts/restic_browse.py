@@ -265,12 +265,15 @@ def restore(
                 if not running:
                     break
                 if cancelled_at is not None and time.monotonic() - cancelled_at > CANCEL_GRACE_SECONDS:
-                    status.stop_process_group(process, 0)
+                    status.signal_group(process, signal.SIGKILL)
                 time.sleep(0.2)
             if pending:
                 handle(pending)
             if cancelled_at is not None:
-                status.signal_group(process, signal.SIGKILL)
+                remaining = CANCEL_GRACE_SECONDS - (time.monotonic() - cancelled_at)
+                if not status.wait_for_group(process, max(0, remaining)):
+                    status.signal_group(process, signal.SIGKILL)
+                    status.wait_for_group(process, 5)
         finally:
             signal.signal(signal.SIGTERM, previous)
     returncode = process.returncode

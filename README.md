@@ -143,7 +143,7 @@ Choose **Browse snapshots** on a job, or select the job and press `Enter`. The b
 - `R` or **Restore** restores the selected file or folder. With nothing selected it restores the folder you are in.
 - `Esc` returns to the job list.
 
-Each restore lands in its own folder, such as `~/Restored/Home 2026-09-20 0300/notes.md`. Move files back into place yourself, where you can see what you are replacing. A notification says when the restore is done, and clicking it opens the folder. A running restore can be cancelled and keeps going if you close the panel. If the shell restarts or the plugin reloads mid-restore, restic stops cleanly and releases its repository lock, and the partial restore stays in its folder.
+Each restore lands in its own folder, such as `~/Restored/Home 2026-09-20 0300/notes.md`. Move files back into place yourself, where you can see what you are replacing. A notification says when the restore is done, and clicking it opens the folder. A running restore can be cancelled and keeps going if you close the panel. If the shell restarts or the plugin reloads mid-restore, restic is told to stop, releases its repository lock, and leaves the partial restore in its folder. If your job's restic command is a wrapper script that does not `exec` restic, the restore instead runs to completion in the background and then releases its lock.
 
 Restore waits until the folder's listing for the chosen snapshot has loaded, so it always restores what you see. restic shows filenames that are not valid UTF-8 with a `�`, which can make two different files look identical, so those names cannot be restored one at a time. Restore the folder that contains them instead.
 
