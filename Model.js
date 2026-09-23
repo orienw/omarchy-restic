@@ -207,16 +207,39 @@ function canBackUp(job) {
   return backupUnit(job) !== "" && job.status !== "running" && !serviceActive(job)
 }
 
+function alertComponent(code) {
+  var value = String(code || "")
+  if (value.indexOf("timer-") === 0) return "timer"
+  if (value.indexOf("integrity-") === 0) return "integrity"
+  if (value.indexOf("repository-") === 0) return "repository"
+  return "service"
+}
+
+// Whether this report shows a component's current state. A failed query or
+// work in progress does not, so its alerts are neither raised nor forgotten
+// until the component is seen again.
+function componentObserved(job, component) {
+  var issues = Array.isArray(job.issues) ? job.issues : []
+  for (var i = 0; i < issues.length; i++) {
+    if (issues[i] && issues[i].severity === "unknown" && alertComponent(issues[i].code) === component)
+      return false
+  }
+  if (component === "service") return !serviceActive(job)
+  if (component === "integrity") return !(job.integrity && job.integrity.status === "running")
+  return true
+}
+
 // Every problem worth a notification, each with its own identity, so one
 // open problem cannot hide a later failed run.
 function alertIssues(job) {
-  if (!job || job.status !== "attention") return []
+  if (!job) return []
   var issues = Array.isArray(job.issues) ? job.issues : []
   var alerts = []
   for (var i = 0; i < issues.length; i++) {
     var entry = issues[i]
-    if (!entry || String(entry.code || "").indexOf("repository-") === 0) continue
-    if (entry.severity !== "critical" && entry.severity !== "warning") continue
+    if (!entry || (entry.severity !== "critical" && entry.severity !== "warning")) continue
+    var component = alertComponent(entry.code)
+    if (component === "repository" || !componentObserved(job, component)) continue
     var run = null
     if (entry.code === "last-run-failed") run = job.service ? job.service.lastRun : null
     else if (entry.code === "integrity-attention") run = job.integrity ? job.integrity.lastRun : null
@@ -225,18 +248,9 @@ function alertIssues(job) {
   return alerts
 }
 
-// Only a job whose systemd state was fully read can prove a problem is gone.
-function observedFully(job) {
-  if (!job || job.status === "unknown") return false
-  var issues = Array.isArray(job.issues) ? job.issues : []
-  for (var i = 0; i < issues.length; i++) {
-    if (issues[i] && issues[i].severity === "unknown") return false
-  }
-  return true
-}
-
-// Remembers alerts, as key -> job id, until a report proves the problem is
-// gone, so an incomplete report cannot make an open problem notify again.
+// Remembers alerts, as key -> job id, until a report shows the problem's
+// component without it, so an incomplete report cannot make an open problem
+// notify again. Job ids never contain "|".
 function nextAlerts(previous, jobs, degraded) {
   var known = {}
   var seen = {}
@@ -247,10 +261,9 @@ function nextAlerts(previous, jobs, degraded) {
     var job = list[i]
     var id = String(job.id)
     seen[id] = true
-    if (!observedFully(job)) {
-      for (key in previous) {
-        if (previous[key] === id) known[key] = id
-      }
+    for (key in previous) {
+      if (previous[key] === id && !componentObserved(job, alertComponent(key.split("|")[1])))
+        known[key] = id
     }
     var fresh = []
     var alerts = alertIssues(job)

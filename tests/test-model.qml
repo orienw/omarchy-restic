@@ -206,7 +206,8 @@ ShellRoot {
       }
       var timerJob = { id: "home", name: "Home", status: "attention", issues: [timerOff] }
       var unverified = { id: "home", name: "Home", status: "unknown", issues: [
-        { code: "service-unavailable", message: "Systemd service status is unavailable", severity: "unknown" }
+        { code: "service-unavailable", message: "Systemd service status is unavailable", severity: "unknown" },
+        { code: "timer-unavailable", message: "Systemd timer status is unavailable", severity: "unknown" }
       ] }
       var partial = { id: "home", name: "Home", status: "attention",
         service: { lastRun: { finishedAt: "2026-08-17T11:00:00Z" } },
@@ -224,6 +225,35 @@ ShellRoot {
       var degraded = alertsFor(timerAlert.known, [], true)
       if (Object.keys(degraded.known).length !== 1 || Object.keys(alertsFor(timerAlert.known, []).known).length !== 0) {
         root.fail("alert history did not follow report completeness for missing jobs")
+        return
+      }
+      var integrityUnknown = { code: "integrity-unknown", message: "Integrity-check service status is unavailable", severity: "unknown" }
+      var timerFixed = alertsFor(timerAlert.known, [{ id: "home", name: "Home", status: "unknown", issues: [integrityUnknown] }])
+      var timerBroken = alertsFor(timerFixed.known, [{ id: "home", name: "Home", status: "attention", issues: [timerOff, integrityUnknown] }])
+      if (Object.keys(timerFixed.known).length !== 0 || timerBroken.notices.length !== 1) {
+        root.fail("an unrelated unknown component kept a repaired alert from rearming")
+        return
+      }
+      var overdueCheck = { code: "integrity-attention", message: "Integrity check is overdue", severity: "warning" }
+      var checkJob = function(status, active) {
+        return { id: "home", name: "Home", status: status,
+          service: { unit: "restic-home.service", active: active },
+          integrity: { status: "attention", lastRun: { finishedAt: "2026-08-01T03:00:00Z" } },
+          issues: [overdueCheck] }
+      }
+      var checkAlert = alertsFor({}, [checkJob("attention", false)])
+      var duringBackup = alertsFor(checkAlert.known, [checkJob("running", true)])
+      var afterBackup = alertsFor(duringBackup.known, [checkJob("attention", false)])
+      if (checkAlert.notices.length !== 1 || duringBackup.notices.length !== 0 || afterBackup.notices.length !== 0) {
+        root.fail("a running backup made an unresolved integrity alert notify again")
+        return
+      }
+      var retryFailed = alertsFor(first.known, [{ id: "home", name: "Home", status: "attention",
+        service: { unit: "restic-home.service", active: true,
+          lastRun: { finishedAt: "2026-08-17T11:00:00Z", result: "failed" } },
+        issues: [{ code: "last-run-failed", message: "Backup failed", severity: "critical" }] }])
+      if (retryFailed.notices.length !== 0 || Object.keys(retryFailed.known).length !== 1) {
+        root.fail("a retry in progress changed the alert for the run it is replacing")
         return
       }
       var recovered = alertsFor(timerAlert.known, [{ id: "home", status: "healthy", issues: [] }])
