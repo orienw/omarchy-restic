@@ -380,7 +380,7 @@ class ResticRoundTripTest(unittest.TestCase):
             root = Path(temporary)
             source = root / "source"
             (source / "Docs" / "sub").mkdir(parents=True)
-            for name in ("x*y.txt", "xay.txt", "[br].txt", "q?.txt"):
+            for name in ("x*y.txt", "xay.txt", "[br].txt", "q?.txt", "next\u0085line.txt", "para\u2029.txt"):
                 (source / "Docs" / name).write_text(name)
             (source / "Docs" / "sub" / "b.txt").write_text("nested")
             (root / "repository").write_text(str(root / "repo"))
@@ -408,7 +408,7 @@ class ResticRoundTripTest(unittest.TestCase):
             listing = browse("ls", "--snapshot", snapshot["id"], "--path", docs)
             self.assertEqual(
                 [entry["name"] for entry in listing["entries"]],
-                ["sub", "[br].txt", "q?.txt", "x*y.txt", "xay.txt"],
+                ["sub", "[br].txt", "next\u0085line.txt", "para\u2029.txt", "q?.txt", "x*y.txt", "xay.txt"],
             )
 
             target = root / "Restored"

@@ -1177,6 +1177,22 @@ class ResticStatusTest(unittest.TestCase):
             )
         self.assertLess(time.perf_counter() - started, 10)
 
+    def test_machine_output_splits_only_on_newlines(self):
+        properties = restic_status.parse_properties(
+            "Description=restic backup of Docs\u0085Work to nas\nLoadState=loaded\n"
+        )
+        self.assertEqual(properties["Description"], "restic backup of Docs\u0085Work to nas")
+        self.assertEqual(properties["LoadState"], "loaded")
+
+        output = "\n".join([
+            journal_entry(NOW - timedelta(minutes=5), restic_status.UNIT_STARTING, "Start\u2028ing"),
+            journal_entry(NOW, restic_status.UNIT_FAILED, "Failed\u2028badly", result="failed"),
+        ])
+        runs = restic_status.parse_journal_runs(output)
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["result"], "failed")
+        self.assertEqual(runs[0]["durationSec"], 300)
+
     def test_runner_children_stop_when_the_collector_is_killed(self):
         marker = self.root / "terminated"
         child = "\n".join([

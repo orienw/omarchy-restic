@@ -604,7 +604,7 @@ def static_variables() -> dict[str, str]:
 
 
 def parse_assignments(text: str, variables: dict[str, str]) -> None:
-    for line in text.replace("\\\n", " ").splitlines():
+    for line in text.replace("\\\n", " ").split("\n"):
         match = SHELL_ASSIGNMENT.match(line)
         if not match:
             continue
@@ -720,7 +720,7 @@ def flag_value(text: str, flag: str, variables: dict[str, str]) -> str | None:
 
 def shell_command_segments(text: str) -> list[list[str]]:
     segments: list[list[str]] = []
-    for line in text.replace("\\\n", " ").splitlines():
+    for line in text.replace("\\\n", " ").split("\n"):
         lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
         lexer.whitespace_split = True
         lexer.commenters = "#"
@@ -903,7 +903,7 @@ def discovered_id(service: str) -> str:
 
 def parse_properties(output: str) -> dict[str, str]:
     result: dict[str, str] = {}
-    for line in output.splitlines():
+    for line in output.split("\n"):
         key, separator, value = line.partition("=")
         if separator:
             if key in {"EnvironmentFiles", "TimersCalendar", "TimersMonotonic"} and key in result:
@@ -958,7 +958,7 @@ def list_user_timers(runner: Runner, timeout: int) -> list[str]:
     return sorted(
         {
             line.split()[0]
-            for line in result.stdout.splitlines()
+            for line in result.stdout.split("\n")
             if line.split() and UNIT_PATTERN.fullmatch(line.split()[0]) and line.split()[0].endswith(".timer")
         }
     )
@@ -1211,7 +1211,7 @@ def timer_state(
 
 def parse_journal_lines(output: str) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
-    for line in output.splitlines():
+    for line in output.split("\n"):
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:

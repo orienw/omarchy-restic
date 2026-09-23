@@ -65,7 +65,7 @@ def resolve_job(
 def restic_error(returncode: int, output: str) -> str:
     if returncode in RESTIC_EXIT_ERRORS:
         return RESTIC_EXIT_ERRORS[returncode]
-    for line in reversed(output.splitlines()):
+    for line in reversed(output.split("\n")):
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
@@ -143,7 +143,7 @@ def list_directory(
     base: list[str], snapshot: str, path: str, runner: status.Runner, timeout: int
 ) -> tuple[list[dict[str, Any]], bool]:
     entries = []
-    for line in run_restic(runner, base + ["ls", snapshot, path], timeout).splitlines():
+    for line in run_restic(runner, base + ["ls", snapshot, path], timeout).split("\n"):
         try:
             node = json.loads(line)
         except json.JSONDecodeError:
