@@ -31,6 +31,26 @@ UNIT_STARTED = "39f53479d3a045ac8e11786248231fbf"
 UNIT_FAILED = "be02cf6855d2428ba40df7e9d022f03d"
 UNIT_SUCCESS = "7ad2d189f7e94e70a38c781354912448"
 UNIT_FAILURE_RESULT = "d9b373ed55a64feb8242e02dbe79a49c"
+UNIT_PROCESS_EXIT = "98e322203f7a4ed290d09fe03c09fe15"
+
+# restic's documented exit codes, which a wrapper script usually passes on.
+# {} names what ran: the backup or its integrity check.
+RESTIC_EXIT_MESSAGES = {
+    3: "Some files could not be read, or snapshots could not be removed",
+    10: "Repository does not exist",
+    11: "Could not lock the repository",
+    12: "Wrong repository password",
+    130: "{} was cancelled",
+}
+UNIT_RESULT_MESSAGES = {
+    "timeout": "{} timed out",
+    "oom-kill": "{} ran out of memory",
+    "watchdog": "{} stopped responding",
+}
+# Results that come from the main process ending. Others, such as
+# start-limit-hit, mean no process ran, so any exit status is left over from
+# an earlier run.
+PROCESS_RESULTS = {"", "exit-code", "signal", "core-dump"}
 
 UNIT_PATTERN = re.compile(r"^[A-Za-z0-9_.:@-]+\.(?:service|timer)$")
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -1243,9 +1263,14 @@ def parse_journal_lines(output: str) -> list[dict[str, Any]]:
 # Runs keep the journal's order rather than their wall-clock times, so a
 # clock stepped backwards cannot make a newer run look older. Within one
 # boot the journal records a unit's runs in the order systemd reported them.
-def parse_journal_runs(output: str) -> list[dict[str, Any]]:
+# Failure messages assume the journal holds every lifecycle entry systemd
+# wrote for the unit. Those come from the user manager, well inside journald's
+# rate limit; if some were lost, a message can name an earlier attempt's exit.
+def parse_journal_runs(output: str, subject: str = "Backup") -> list[dict[str, Any]]:
     invocations: dict[str, dict[str, Any]] = {}
     completions: dict[str, dict[str, Any]] = {}
+    exits: dict[str, dict[str, Any]] = {}
+    closed: set[str] = set()
 
     for order, entry in enumerate(parse_journal_lines(output)):
         message_id = str(entry.get("MESSAGE_ID") or "")
@@ -1263,6 +1288,25 @@ def parse_journal_runs(output: str) -> list[dict[str, Any]]:
             invocation["startedAt"] = timestamp
             continue
 
+        # A failing ExecStartPre logs the same message, but then the main
+        # command never ran and systemd's own wording is right.
+        if message_id == UNIT_PROCESS_EXIT:
+            if entry.get("COMMAND") == "ExecStart":
+                exits[invocation_id] = {"code": str(entry.get("EXIT_CODE") or ""), "status": entry.get("EXIT_STATUS")}
+                closed.discard(invocation_id)
+            continue
+
+        # Each attempt ends with one failure result. Another under the same
+        # invocation is an attempt that never ran the main command, such as a
+        # restart refused by the start limit, where older systemd repeats the
+        # earlier result.
+        if message_id == UNIT_FAILURE_RESULT:
+            if invocation_id in closed or "result" in exits.get(invocation_id, {}):
+                exits.pop(invocation_id, None)
+                closed.add(invocation_id)
+            else:
+                exits.setdefault(invocation_id, {})["result"] = str(entry.get("UNIT_RESULT") or "")
+
         if message_id in {
             UNIT_STARTED,
             UNIT_SUCCESS,
@@ -1273,11 +1317,25 @@ def parse_journal_runs(output: str) -> list[dict[str, Any]]:
                 message_id in {UNIT_STARTED, UNIT_SUCCESS}
                 and entry.get("JOB_RESULT", "done") == "done"
             )
+            message = None
+            process = exits.get(invocation_id, {})
+            # Only a failed job ran the main command; the failure-result entry
+            # carries no job result. A dependency or cancelled job never did.
+            if not successful and process and entry.get("JOB_RESULT", "failed") == "failed":
+                try:
+                    status = int(str(process.get("status")))
+                except ValueError:
+                    status = 0
+                message = failure_message(process.get("result", ""), process.get("code", ""), status, subject)
+            # The job's end closes the attempt too.
+            if message_id != UNIT_FAILURE_RESULT:
+                exits.pop(invocation_id, None)
+                closed.add(invocation_id)
             invocation.update(
                 {
                     "finishedAt": timestamp,
                     "result": "success" if successful else "failed",
-                    "message": sanitize(entry.get("MESSAGE")),
+                    "message": message or sanitize(entry.get("MESSAGE")),
                 }
             )
             invocation["durationSec"] = elapsed_seconds(
@@ -1294,16 +1352,16 @@ def parse_journal_runs(output: str) -> list[dict[str, Any]]:
     return sorted(completions.values(), key=lambda run: run["order"])
 
 
-# Only systemd's own start and finish messages, so reading a unit's whole
-# history stays small.
+# Only systemd's own start, finish and failed-exit messages, so reading a
+# unit's whole history stays small.
 LIFECYCLE_MATCHES = [
     f"MESSAGE_ID={message_id}"
-    for message_id in (UNIT_STARTING, UNIT_STARTED, UNIT_SUCCESS, UNIT_FAILED, UNIT_FAILURE_RESULT)
+    for message_id in (UNIT_STARTING, UNIT_STARTED, UNIT_SUCCESS, UNIT_FAILED, UNIT_FAILURE_RESULT, UNIT_PROCESS_EXIT)
 ]
 
 
 def journal_runs(
-    unit: str, runner: Runner, timeout: int, scope: list[str]
+    unit: str, runner: Runner, timeout: int, scope: list[str], subject: str = "Backup"
 ) -> tuple[list[dict[str, Any]] | None, str]:
     command = [
         "journalctl",
@@ -1320,7 +1378,7 @@ def journal_runs(
         return None, sanitize(error)
     if result.returncode != 0:
         return None, sanitize(result.stderr or result.stdout)
-    return parse_journal_runs(result.stdout), ""
+    return parse_journal_runs(result.stdout, subject), ""
 
 
 # This boot's own latest entry names the journal being written. The latest
@@ -1365,14 +1423,14 @@ def bare_run(run: dict[str, Any] | None) -> dict[str, Any] | None:
 # The current boot decides the latest run: within a boot the journal keeps a
 # unit's runs in order, while boots' clocks can disagree. Older boots are read
 # only when this boot has no run or no success yet.
-def journal_history(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
-    current, error = journal_runs(unit, runner, timeout, ["--boot=0", "--lines=80"])
+def journal_history(unit: str, runner: Runner, timeout: int, subject: str = "Backup") -> dict[str, Any]:
+    current, error = journal_runs(unit, runner, timeout, ["--boot=0", "--lines=80"], subject)
     runs = current or []
     successful = [run for run in runs if run.get("result") == "success"]
     if not runs or not successful:
         # The whole history: a line limit could cut off the newest run when
         # journalctl lists another journal's entries after it.
-        earlier, earlier_error = journal_runs(unit, runner, timeout, [])
+        earlier, earlier_error = journal_runs(unit, runner, timeout, [], subject)
         ordered = None if earlier is None else sequenced(earlier, active_journal(runner, timeout))
         if not runs and ordered is None:
             reason = error or earlier_error or "Run order across reboots is unclear"
@@ -1387,6 +1445,28 @@ def journal_history(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
     }
 
 
+# systemd words any failed run of a oneshot service as "Failed to start",
+# though it ran. What ended the main process says what went wrong.
+def failure_message(result: str, exit_code: str, exit_status: int, subject: str) -> str | None:
+    if result in UNIT_RESULT_MESSAGES:
+        return UNIT_RESULT_MESSAGES[result].format(subject)
+    if result not in PROCESS_RESULTS:
+        return None
+    if exit_code == "exited" and exit_status:
+        known = RESTIC_EXIT_MESSAGES.get(exit_status)
+        return known.format(subject) if known else f"{subject} exited with status {exit_status}"
+    if exit_code in {"killed", "dumped"} and exit_status:
+        try:
+            name = signal.Signals(exit_status).name
+        except ValueError:
+            name = f"signal {exit_status}"
+        return f"{subject} crashed ({name})" if exit_code == "dumped" else f"{subject} was stopped by {name}"
+    return None
+
+
+# systemd keeps the last exit status, and on some versions the last result,
+# through a restart refused by the start limit, and nothing here dates the
+# exit to the failure. So only systemd's own words are repeated.
 def fallback_run_from_systemd(state: dict[str, Any]) -> dict[str, Any] | None:
     if not state.get("available") or state.get("active"):
         return None
@@ -1457,9 +1537,9 @@ def run_identity(run: dict[str, Any] | None) -> str | None:
     return (run.get("invocationId") or run.get("finishedAt")) if run else None
 
 
-def collect_unit(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
+def collect_unit(unit: str, runner: Runner, timeout: int, subject: str = "Backup") -> dict[str, Any]:
     state = service_state(unit, runner, timeout)
-    history = journal_history(unit, runner, timeout)
+    history = journal_history(unit, runner, timeout, subject)
     last_run = later_run(history.get("lastRun"), fallback_run_from_systemd(state))
     last_success = history.get("lastSuccessAt")
     if last_run and last_run.get("result") == "success":
@@ -1993,7 +2073,7 @@ def evaluate_integrity(
             "timer": None,
         }
 
-    service = collect_unit(job["checkService"], runner, timeout)
+    service = collect_unit(job["checkService"], runner, timeout, "Integrity check")
     timer = (
         timer_state(job["checkTimer"], runner, timeout, now)
         if job.get("checkTimer")

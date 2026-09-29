@@ -34,11 +34,13 @@ def journal_entry(
     result: str | None = None,
     seqnum: int | None = None,
     seqnum_id: str | None = None,
+    **fields: str,
 ) -> str:
     entry = {
         "__REALTIME_TIMESTAMP": str(int(timestamp.timestamp() * 1_000_000)),
         "USER_INVOCATION_ID": invocation,
         "MESSAGE": message,
+        **fields,
     }
     if seqnum is not None:
         entry["__SEQNUM"] = str(seqnum)
@@ -66,9 +68,11 @@ class FakeRunner:
         next_run_hours: float = 23,
         no_history: bool = False,
         calendar: str = "daily UTC",
+        exit_status: int = 0,
     ):
         self.active = active
         self.failed = failed
+        self.exit_status = exit_status
         self.restic_error = restic_error
         self.stats_error = stats_error
         self.systemd_unavailable = systemd_unavailable
@@ -140,7 +144,7 @@ class FakeRunner:
             f"ActiveState={'active' if self.active else 'inactive'}",
             f"SubState={'running' if self.active else 'dead'}",
             f"Result={'exit-code' if self.failed else 'success'}",
-            "ExecMainCode=exited",
+            "ExecMainCode=1",
             f"ExecMainStatus={1 if self.failed else 0}",
             f"ExecMainStartTimestamp={start_timestamp}",
             f"ExecMainExitTimestamp={exit_timestamp}",
@@ -156,6 +160,7 @@ class FakeRunner:
             restic_status.UNIT_STARTING,
             "Starting backup",
             invocation,
+            JOB_ID="1",
         )
         if self.active:
             return subprocess.CompletedProcess([], 0, started + "\n", "")
@@ -166,7 +171,17 @@ class FakeRunner:
                 "Backup failed",
                 invocation,
                 result="failed",
+                JOB_ID="1",
             )
+            if self.exit_status:
+                finished = "\n".join([
+                    journal_entry(NOW - timedelta(hours=self.history_age_hours), restic_status.UNIT_PROCESS_EXIT,
+                                  "Main process exited", invocation, COMMAND="ExecStart", EXIT_CODE="exited",
+                                  EXIT_STATUS=str(self.exit_status)),
+                    journal_entry(NOW - timedelta(hours=self.history_age_hours), restic_status.UNIT_FAILURE_RESULT,
+                                  "Failed with result 'exit-code'.", invocation, UNIT_RESULT="exit-code"),
+                    finished,
+                ])
         else:
             finished = journal_entry(
                 NOW - timedelta(hours=self.history_age_hours),
@@ -316,7 +331,7 @@ class RollbackRunner(FakeRunner):
             f"SubState={'failed' if failed else 'dead'}",
             f"Result={'exit-code' if failed else 'success'}",
             f"InvocationID={self.latest if self.systemd_invocation else ''}",
-            "ExecMainCode=exited",
+            "ExecMainCode=1",
             f"ExecMainStatus={1 if failed else 0}",
             f"ExecMainStartTimestamp=@{epoch(finished) - 120}",
             f"ExecMainExitTimestamp=@{epoch(finished)}",
@@ -933,6 +948,26 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(run["finishedAt"], "2026-08-17T11:00:00Z")
         self.assertEqual(run["durationSec"], 120)
 
+    def test_without_history_a_refused_restart_is_not_blamed_on_the_earlier_exit(self):
+        # systemd 259 keeps Result=exit-code and the old exit status through a
+        # restart refused by the start limit.
+        state = restic_status.service_state("restic-home.service", FakeRunner(failed=True), 30)
+        state.update({"activeState": "failed", "exitStatus": 12,
+                      "stateChangedAt": restic_status.isoformat(NOW - timedelta(minutes=5))})
+        with patch.object(restic_status, "service_state", return_value=state):
+            job = self.collect(FakeRunner(failed=True, no_history=True))["jobs"][0]
+
+        run = job["service"]["lastRun"]
+        self.assertEqual(run["result"], "failed")
+        self.assertEqual(run["message"], "Service result: exit-code")
+        self.assertEqual(run["finishedAt"], state["stateChangedAt"])
+
+    def test_the_exit_reason_reaches_the_status_and_the_notification(self):
+        job = self.collect(FakeRunner(failed=True, exit_status=11))["jobs"][0]
+        self.assertEqual(job["statusText"], "Could not lock the repository")
+        [failed] = [entry for entry in job["issues"] if entry["code"] == "last-run-failed"]
+        self.assertEqual(failed["message"], "Could not lock the repository")
+
     def test_reset_failed_state_reports_the_journal_run_not_the_reset(self):
         state = restic_status.service_state("restic-home.service", FakeRunner(failed=True), 30)
         state.update({
@@ -950,6 +985,96 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(run["finishedAt"], restic_status.isoformat(NOW - timedelta(hours=1)))
         self.assertNotEqual(run["finishedAt"], state["stateChangedAt"])
         self.assertEqual(run["durationSec"], 120)
+
+    def failed_run(self, *entries: tuple[str, str, dict[str, str]]) -> dict:
+        output = "\n".join([
+            journal_entry(NOW - timedelta(minutes=2), restic_status.UNIT_STARTING, "Starting restic backup...",
+                          JOB_ID="1"),
+            *(journal_entry(NOW, message_id, message, **fields) for message_id, message, fields in entries),
+            journal_entry(NOW, restic_status.UNIT_FAILED, "Failed to start restic backup.", result="failed",
+                          JOB_ID="1"),
+        ])
+        [run] = restic_status.parse_journal_runs(output)
+        self.assertEqual(run["result"], "failed")
+        return run
+
+    def main_exit(self, code: str, status: int) -> tuple[str, str, dict[str, str]]:
+        return (restic_status.UNIT_PROCESS_EXIT, "Main process exited",
+                {"COMMAND": "ExecStart", "EXIT_CODE": code, "EXIT_STATUS": str(status)})
+
+    def unit_result(self, result: str) -> tuple[str, str, dict[str, str]]:
+        return (restic_status.UNIT_FAILURE_RESULT, f"Failed with result '{result}'.", {"UNIT_RESULT": result})
+
+    def test_failed_run_says_why_the_backup_process_ended_not_failed_to_start(self):
+        cases = [
+            ("exited", 3, "exit-code", "Some files could not be read, or snapshots could not be removed"),
+            ("exited", 11, "exit-code", "Could not lock the repository"),
+            ("exited", 2, "exit-code", "Backup exited with status 2"),
+            ("killed", 9, "signal", "Backup was stopped by SIGKILL"),
+            ("killed", 15, "timeout", "Backup timed out"),
+            ("killed", 9, "oom-kill", "Backup ran out of memory"),
+            ("killed", 6, "watchdog", "Backup stopped responding"),
+            ("dumped", 6, "core-dump", "Backup crashed (SIGABRT)"),
+        ]
+        for code, status, result, message in cases:
+            with self.subTest(code=code, status=status, result=result):
+                run = self.failed_run(self.main_exit(code, status), self.unit_result(result))
+                self.assertEqual(run["message"], message)
+
+    def test_a_failure_before_the_backup_ran_keeps_systemds_message(self):
+        pre = (restic_status.UNIT_PROCESS_EXIT, "Control process exited",
+               {"COMMAND": "ExecStartPre", "EXIT_CODE": "exited", "EXIT_STATUS": "1"})
+        run = self.failed_run(pre, self.unit_result("exit-code"))
+        self.assertEqual(run["message"], "Failed to start restic backup.")
+
+    def test_an_attempt_that_never_ran_does_not_reuse_the_earlier_exit(self):
+        earlier = NOW - timedelta(minutes=4)
+
+        def exit_entry(code: str, status: str) -> str:
+            return journal_entry(earlier, restic_status.UNIT_PROCESS_EXIT, "Main process exited",
+                                 COMMAND="ExecStart", EXIT_CODE=code, EXIT_STATUS=status)
+
+        def result_entry(when: datetime, result: str) -> str:
+            return journal_entry(when, restic_status.UNIT_FAILURE_RESULT, "Failed", UNIT_RESULT=result)
+
+        # A stopped job is cancelled and logs no job end, and a simple
+        # service's job ends before its process does.
+        earlier_runs = {
+            "failed job": [exit_entry("exited", "12"), result_entry(earlier, "exit-code"),
+                           journal_entry(earlier, restic_status.UNIT_FAILED, "Failed to start.", result="failed",
+                                         JOB_ID="1")],
+            "stopped job": [exit_entry("killed", "15"), result_entry(earlier, "signal")],
+            "simple service": [journal_entry(earlier, restic_status.UNIT_STARTED, "Started.", result="done",
+                                             JOB_ID="1"),
+                               exit_entry("exited", "12"), result_entry(earlier, "exit-code")],
+        }
+        refused = journal_entry(NOW, restic_status.UNIT_FAILED, "Failed to start restic backup.", result="failed",
+                                JOB_ID="2")
+        # systemd 258 and 259 repeat the earlier result on a refused restart.
+        later_attempts = {
+            "start limit": ([result_entry(NOW, "start-limit-hit"), refused], "Failed to start restic backup."),
+            "repeated result": ([result_entry(NOW, "exit-code"), refused], "Failed to start restic backup."),
+            "repeated timeout": ([result_entry(NOW, "timeout"), refused], "Failed to start restic backup."),
+            "dependency": ([journal_entry(NOW, restic_status.UNIT_FAILED, "Dependency failed for restic backup.",
+                                          result="dependency", JOB_ID="2")], "Dependency failed for restic backup."),
+        }
+        for run_name, ended in earlier_runs.items():
+            for attempt_name, (attempt, message) in later_attempts.items():
+                with self.subTest(earlier=run_name, later=attempt_name):
+                    started = journal_entry(NOW - timedelta(minutes=5), restic_status.UNIT_STARTING, "Starting...",
+                                            JOB_ID="1")
+                    [run] = restic_status.parse_journal_runs("\n".join([started, *ended, *attempt]))
+                    self.assertEqual(run["message"], message)
+
+    def test_a_timeout_without_a_logged_exit_still_says_it_timed_out(self):
+        run = self.failed_run(self.unit_result("timeout"))
+        self.assertEqual(run["message"], "Backup timed out")
+
+    def test_the_journal_asks_for_the_backup_process_exit(self):
+        runner = FakeRunner()
+        restic_status.journal_runs("restic-home.service", runner, 30, [])
+        command = next(command for command, _ in runner.calls if "--output=json" in command)
+        self.assertIn(f"MESSAGE_ID={restic_status.UNIT_PROCESS_EXIT}", command)
 
     def test_failed_refresh_keeps_cached_repository_data(self):
         self.collect(FakeRunner())
@@ -1282,6 +1407,36 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(report["overallStatus"], "healthy")
         self.assertEqual(integrity["status"], "healthy")
         self.assertEqual(integrity["statusText"], "Last integrity check passed")
+
+    def test_a_failed_integrity_check_is_not_reported_as_a_backup_failure(self):
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        config["jobs"][0].update({"checkService": "restic-home-check.service", "checkMaxAgeHours": 720})
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+        finished = NOW - timedelta(hours=1)
+        failed_check = "\n".join([
+            journal_entry(finished - timedelta(minutes=2), restic_status.UNIT_STARTING, "Starting check", "check",
+                          JOB_ID="7"),
+            journal_entry(finished, restic_status.UNIT_PROCESS_EXIT, "Main process exited", "check",
+                          COMMAND="ExecStart", EXIT_CODE="exited", EXIT_STATUS="1"),
+            journal_entry(finished, restic_status.UNIT_FAILURE_RESULT, "Failed", "check", UNIT_RESULT="exit-code"),
+            journal_entry(finished, restic_status.UNIT_FAILED, "Failed to start check.", "check", result="failed",
+                          JOB_ID="7"),
+        ]) + "\n"
+        runner = FakeRunner()
+        run = runner.run
+
+        def check_journal(command: list[str], *, timeout: int, env: dict[str, str] | None = None):
+            if command[0] == "journalctl" and "USER_UNIT=restic-home-check.service" in command:
+                return subprocess.CompletedProcess(command, 0, failed_check, "")
+            return run(command, timeout=timeout, env=env)
+
+        runner.run = check_journal
+        job = self.collect(runner)["jobs"][0]
+
+        self.assertEqual(job["service"]["lastRun"]["result"], "success")
+        self.assertEqual(job["integrity"]["statusText"], "Integrity check exited with status 1")
+        [issue] = [entry for entry in job["issues"] if entry["code"] == "integrity-attention"]
+        self.assertEqual(issue["message"], "Integrity check exited with status 1")
 
     def test_unavailable_integrity_service_cannot_reuse_a_healthy_verdict(self):
         class UnavailableCheck(FakeRunner):
