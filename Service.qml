@@ -284,11 +284,16 @@ Item {
     onTriggered: root.nowMs = Date.now()
   }
 
+  // New settings must reach the collector, so a run already under way with
+  // the old ones is followed by another.
   Timer {
     id: delayedRefresh
     interval: 100
     repeat: false
-    onTriggered: root.refresh(false)
+    onTriggered: {
+      root.refreshPending = true
+      root.refresh(false)
+    }
   }
 
   Process {

@@ -52,6 +52,10 @@ cat > "$STARTUP_PLUGIN_DIR/scripts/restic_status.py" <<'PY'
 import datetime
 import json
 import sys
+import time
+
+# Slow enough that a settings change can land while a run is under way.
+time.sleep(0.2)
 
 options = dict(argument.split("=", 1) for argument in sys.argv[1:] if argument.startswith("--") and "=" in argument)
 print(json.dumps({

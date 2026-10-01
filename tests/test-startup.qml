@@ -81,6 +81,8 @@ ShellRoot {
       }
 
       if (root.stage === 0) {
+        // Change settings while a run with the old ones is under way.
+        service.refresh(false)
         scopedShell.barConfig = { layout: { center: [{
           id: "io.github.orienw.restic", jobsFile: "~/updated jobs.json",
           refreshIntervalSec: 90, repositoryRefreshMinutes: 11, logLines: 8
