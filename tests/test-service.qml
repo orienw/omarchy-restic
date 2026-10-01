@@ -136,6 +136,20 @@ ShellRoot {
         return
       }
       service.clearRestore()
+      service.restoreState = "running"
+      service._finishRestore()
+      if (service.restoreState !== "error" || service.restoreError !== "Restore stopped unexpectedly") {
+        root.fail("a restore that exited silently was not reported as failed")
+        return
+      }
+      service.restoreState = "running"
+      service._restoreCancelled = true
+      service._finishRestore()
+      if (service.restoreState !== "cancelled") {
+        root.fail("a restore cancelled before restic started was reported as " + service.restoreState)
+        return
+      }
+      service.clearRestore()
       if (service.restoreState !== "" || service.restoreEntry("home", null, null) !== "busy") {
         root.fail("restore state did not clear or accepted a missing entry")
         return

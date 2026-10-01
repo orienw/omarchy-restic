@@ -36,6 +36,7 @@ Item {
   property string restorePath: ""
   property string restoreFolder: ""
   property string restoreError: ""
+  property bool _restoreCancelled: false
   property var report: ({
     schemaVersion: 1,
     generatedAt: null,
@@ -199,6 +200,7 @@ Item {
     restorePath = ""
     restoreFolder = ""
     restoreError = ""
+    _restoreCancelled = false
     // "--option=value" keeps a value that starts with "-" from reading as a flag.
     restorer.command = [
       "python3", browsePath, "restore",
@@ -215,7 +217,9 @@ Item {
   }
 
   function cancelRestore() {
-    if (restorer.running) restorer.signal(15)
+    if (!restorer.running) return
+    _restoreCancelled = true
+    restorer.signal(15)
   }
 
   function clearRestore() {
@@ -323,6 +327,18 @@ Item {
     }
   }
 
+  // Without a final event the helper stopped before it could report: either
+  // a cancel arrived before restic started, or it failed.
+  function _finishRestore() {
+    if (restoreState !== "running" || restorer.running) return
+    if (_restoreCancelled) {
+      restoreState = "cancelled"
+      return
+    }
+    restoreState = "error"
+    restoreError = "Restore stopped unexpectedly"
+  }
+
   Process {
     id: restorer
     running: false
@@ -339,11 +355,7 @@ Item {
     id: restoreExitCheck
     interval: 500
     repeat: false
-    onTriggered: {
-      if (root.restoreState !== "running" || restorer.running) return
-      root.restoreState = "error"
-      root.restoreError = "Restore stopped unexpectedly"
-    }
+    onTriggered: root._finishRestore()
   }
 
   Process {
