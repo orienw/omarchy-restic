@@ -360,7 +360,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise BrowseError("Choose a file or folder to restore")
             snapshot = snapshot_id(args.snapshot)
             folder = unique_directory(args.target_root, restore_label(job, args.snapshot_time))
-            restore(base, snapshot, path, args.type, folder, emit)
+            try:
+                restore(base, snapshot, path, args.type, folder, emit)
+            except OSError:
+                remove_if_empty(folder)
+                raise
     except (BrowseError, status.RepositoryUnavailable) as error:
         emit({"type": "error", "error": str(error)})
     except OSError as error:

@@ -304,6 +304,18 @@ class ResticBrowseTest(unittest.TestCase):
         self.assertEqual(event["type"], "cancelled")
         self.assertEqual([path.name for path in Path(event["folder"]).iterdir()], ["big.iso"])
 
+    def test_restic_that_cannot_start_leaves_no_folder(self):
+        self.restic.write_bytes(b"\x7fELF-not-really")
+        output = subprocess.run(
+            [sys.executable, str(PROJECT_DIR / "scripts" / "restic_browse.py"), "restore",
+             "--config", str(self.config()), "--cache-dir", str(self.root / "cache"), "--job", "home",
+             "--snapshot", SNAPSHOT, "--path", "/home/test/notes.md", "--target-root", str(self.root / "out")],
+            capture_output=True, text=True, timeout=30,
+        )
+
+        self.assertEqual(json.loads(output.stdout)["type"], "error")
+        self.assertEqual(list((self.root / "out").iterdir()), [])
+
     def test_cancel_stops_every_process_a_restic_wrapper_started(self):
         child_file = self.root / "child.pid"
         process = self.start_restore("wrapper", FAKE_RESTIC_CHILD=str(child_file))
