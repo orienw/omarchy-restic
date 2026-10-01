@@ -8,6 +8,10 @@ if command == "snapshots" and options["--job"] == "single":
     print(json.dumps({"type": "snapshots", "snapshots": [
         {"id": "c" * 64, "shortId": "cccccccc", "time": "2026-08-17T03:30:00Z", "paths": ["/home/test/config.toml"]},
     ]}))
+elif command == "snapshots" and options["--job"] == "relative":
+    print(json.dumps({"type": "snapshots", "snapshots": [
+        {"id": "d" * 64, "shortId": "dddddddd", "time": "2026-08-17T03:30:00Z", "paths": ["/home/test/Relative"]},
+    ]}))
 elif command == "snapshots" and options["--job"] in ("swaproot", "linkroot"):
     print(json.dumps({"type": "snapshots", "snapshots": [
         {"id": "b" * 64, "shortId": "bbbbbbbb", "time": "2026-08-17T03:30:00Z", "paths": ["/home/test/Swap"]},
@@ -25,6 +29,12 @@ elif options["--path"] == "/home/test":
         {"name": "config.toml", "type": "file", "path": "/home/test/config.toml", "size": 12},
         {"name": "<b>ENTRY_LITERAL</b>.txt", "type": "file", "path": "/home/test/<b>ENTRY_LITERAL</b>.txt", "size": 42},
     ]}))
+elif options["--snapshot"] == "d" * 64:
+    # A backup of relative paths keeps its tree under the root, not at its recorded path.
+    entries = [{"name": "Relative", "type": "dir", "path": "/Relative", "size": None}]
+    found = options["--path"] == "/"
+    print(json.dumps({"type": "entries", "path": options["--path"], "truncated": False, "exists": found,
+                      "kind": "dir" if found else "missing", "entries": entries if found else []}))
 elif options["--path"] == "/home/test/Pictures" and options["--snapshot"] == "a" * 64:
     print(json.dumps({"type": "error", "error": "path /home/test/Pictures: not found"}))
 elif options["--path"] in ("/home/test/Empty", "/home/test/Gone", "/home/test/config.toml"):

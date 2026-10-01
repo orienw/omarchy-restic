@@ -34,9 +34,9 @@ Item {
   property var listings: ({})
   property int session: 0
   property string shownKey: ""
-  // The one listing allowed to redirect a single-file snapshot to its folder:
-  // the newest snapshot's root, until the user goes anywhere else. After that,
-  // not even a return to the same listing redirects.
+  // The one listing allowed to redirect, a single-file snapshot to its folder
+  // or a missing root to "/": the newest snapshot's root, until the user goes
+  // anywhere else. After that, not even a return to the same listing redirects.
   property string openingKey: ""
 
   property var _active: null
@@ -143,10 +143,16 @@ Item {
 
   function show(listing) {
     // A snapshot of a single file starts at the file: open its folder instead.
+    // A backup of relative paths records them as absolute but stores them
+    // under the root, so its recorded folder is missing: open the root.
     // Only when opening; elsewhere a path that is not a folder is simply not
     // in this snapshot, and the selection stays as it was.
     var opening = openingKey !== ""
     openingKey = ""
+    if (opening && listing.kind === "missing" && path !== "/") {
+      navigate("/", "")
+      return
+    }
     if (opening && listing.kind && listing.kind !== "dir" && listing.kind !== "missing") {
       navigate(Model.parentPath(path), Model.baseName(path))
       return

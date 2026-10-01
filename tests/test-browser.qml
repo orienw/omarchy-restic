@@ -267,6 +267,17 @@ ShellRoot {
             + browser.path + " " + browser.selectedName)
           return
         }
+        browser.open({ id: "relative", name: "Relative" })
+        root.stage = 77
+        return
+      }
+
+      if (root.stage === 77) {
+        if (!browser.listingReady) return
+        if (browser.path !== "/" || browser.entries.length !== 1 || browser.entries[0].name !== "Relative") {
+          root.fail("a relative-path snapshot did not open at its root: " + browser.path)
+          return
+        }
         root.stage = 8
         return
       }
