@@ -52,7 +52,7 @@ The plugin never uses `--no-lock`, reads password contents itself, prunes snapsh
 
 - Omarchy 4 with shell plugin support
 - Python 3
-- restic
+- restic 0.16 or newer, for restoring a single file or folder
 - Each monitored backup represented by a user systemd service and timer
 - Repository and password files usable by restic
 
