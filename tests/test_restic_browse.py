@@ -28,8 +28,12 @@ mode = os.environ.get("FAKE_RESTIC_MODE", "ok")
 if mode == "password":
     print(json.dumps({"message_type": "exit_error", "code": 12, "message": "Fatal: wrong password"}))
     sys.exit(12)
+if mode == "partial":
+    partial = Path(args[args.index("--target") + 1])
+    partial.mkdir(parents=True, exist_ok=True)
+    (partial / "big.iso").write_text("half")
 print(json.dumps({"message_type": "status", "percent_done": 0.5}), flush=True)
-if mode in ("slow", "wrapper", "wrapper-cleanup"):
+if mode in ("slow", "partial", "wrapper", "wrapper-cleanup"):
     import signal, subprocess
     marker = os.environ.get("FAKE_RESTIC_TERM_MARKER")
     def stop(signum, frame):
@@ -140,7 +144,7 @@ class ResticBrowseTest(unittest.TestCase):
         os.environ["FAKE_RESTIC_MODE"] = "password"
         event = self.restore("/home/test/notes.md", "file")
 
-        self.assertEqual(event, {"type": "error", "error": "Wrong repository password", "folder": str(self.folder)})
+        self.assertEqual(event, {"type": "error", "error": "Wrong repository password", "folder": ""})
         self.assertFalse(self.folder.exists())
 
     def test_restore_that_writes_nothing_is_an_error(self):
@@ -287,9 +291,18 @@ class ResticBrowseTest(unittest.TestCase):
         event = json.loads(process.stdout.readline())
 
         self.assertEqual(process.wait(timeout=10), 0)
-        self.assertEqual(event["type"], "cancelled")
+        self.assertEqual(event, {"type": "cancelled", "folder": ""})
         self.assertTrue(marker.exists())
         self.assertEqual(list((self.root / "out").iterdir()), [])
+
+    def test_cancel_names_the_folder_that_kept_partial_files(self):
+        process = self.start_restore("partial")
+        process.send_signal(signal.SIGTERM)
+        event = json.loads(process.stdout.readline())
+
+        self.assertEqual(process.wait(timeout=10), 0)
+        self.assertEqual(event["type"], "cancelled")
+        self.assertEqual([path.name for path in Path(event["folder"]).iterdir()], ["big.iso"])
 
     def test_cancel_stops_every_process_a_restic_wrapper_started(self):
         child_file = self.root / "child.pid"

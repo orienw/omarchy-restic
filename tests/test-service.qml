@@ -131,8 +131,16 @@ ShellRoot {
       service.clearRestore()
       service.restoreState = "running"
       service.handleRestoreLine(JSON.stringify({type: "error", error: "Wrong repository password"}))
-      if (service.restoreState !== "error" || service.restoreError !== "Wrong repository password") {
+      if (service.restoreState !== "error" || service.restoreError !== "Wrong repository password"
+          || service.restoreFolder !== "") {
         root.fail("restore failure was not reported")
+        return
+      }
+      service.clearRestore()
+      service.restoreState = "running"
+      service.handleRestoreLine(JSON.stringify({type: "cancelled", folder: "/tmp/r"}))
+      if (service.restoreState !== "cancelled" || service.restoreFolder !== "/tmp/r") {
+        root.fail("a cancelled restore did not keep the folder holding its partial files")
         return
       }
       service.clearRestore()

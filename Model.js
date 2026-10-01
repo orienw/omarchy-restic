@@ -364,6 +364,11 @@ function tildePath(path, home) {
   return value.indexOf(prefix + "/") === 0 ? "~" + value.substring(prefix.length) : value
 }
 
+// Where a failed or cancelled restore kept the files it had restored.
+function partialFiles(folder, home) {
+  return folder ? "Partial files are in " + tildePath(folder, home) : ""
+}
+
 function restoreNotice(event, name, home) {
   var base = ["omarchy-notification-send", "--app-name", "Restic", "-g", "󰁯", "-u", "normal"]
   if (event.type === "done")
@@ -372,8 +377,10 @@ function restoreNotice(event, name, home) {
       notificationText(escapeMarkup(tildePath(event.path, home))),
       "--exec", "uwsm-app", "--", "xdg-open", String(event.folder)
     ])
-  return base.concat([
+  var failed = base.concat([
     notificationText("Could not restore " + name),
-    notificationText(escapeMarkup(event.error || "Restore failed"))
+    notificationText(escapeMarkup([event.error || "Restore failed", partialFiles(event.folder, home)]
+      .filter(Boolean).join("\n")))
   ])
+  return event.folder ? failed.concat(["--exec", "uwsm-app", "--", "xdg-open", String(event.folder)]) : failed
 }

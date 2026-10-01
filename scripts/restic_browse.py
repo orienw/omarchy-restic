@@ -202,6 +202,11 @@ def remove_if_empty(*paths: Path) -> None:
             pass
 
 
+# A failed or cancelled restore names its folder only if it kept files there.
+def kept_folder(folder: Path) -> str:
+    return str(folder) if folder.exists() else ""
+
+
 def restore(
     base: list[str],
     snapshot: str,
@@ -288,13 +293,13 @@ def restore(
 
     if cancelled:
         remove_if_empty(restored, folder)
-        emit({"type": "cancelled", "folder": str(folder)})
+        emit({"type": "cancelled", "folder": kept_folder(folder)})
     elif returncode != 0:
         remove_if_empty(restored, folder)
-        emit({"type": "error", "error": restic_error(returncode, "".join(output)), "folder": str(folder)})
+        emit({"type": "error", "error": restic_error(returncode, "".join(output)), "folder": kept_folder(folder)})
     elif not restored.exists() and not restored.is_symlink():
         remove_if_empty(folder)
-        emit({"type": "error", "error": "Nothing was restored", "folder": str(folder)})
+        emit({"type": "error", "error": "Nothing was restored", "folder": kept_folder(folder)})
     else:
         emit({
             "type": "done",

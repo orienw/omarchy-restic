@@ -23,6 +23,7 @@ ShellRoot {
     property string restoreName: ""
     property real restorePercent: -1
     property string restoreError: ""
+    property string restoreFolder: ""
     property var restoreCalls: []
 
     function restoreEntry(jobId, snapshot, entry) {

@@ -316,6 +316,13 @@ ShellRoot {
         root.fail("failed restore notice was wrong: " + JSON.stringify(failed))
         return
       }
+      var partial = Model.restoreNotice({ type: "error", error: "Disk full", folder: "/home/test/Restored/Home" },
+        "notes.md", "/home/test")
+      if (partial[8] !== "Disk full\nPartial files are in ~/Restored/Home"
+          || partial[partial.length - 1] !== "/home/test/Restored/Home") {
+        root.fail("a failed restore notice did not say where its partial files are: " + JSON.stringify(partial))
+        return
+      }
       console.log("model tests passed")
       Qt.quit()
     }

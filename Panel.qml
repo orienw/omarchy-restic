@@ -244,7 +244,9 @@ Panel {
             text: root.resticService && root.resticService.restoreState === "running"
               ? "Restoring " + root.resticService.restoreName + "..."
               : root.resticService && root.resticService.restoreState === "error"
-                ? root.resticService.restoreError
+                ? [root.resticService.restoreError,
+                   Model.partialFiles(root.resticService.restoreFolder, root.resticService.home)]
+                  .filter(Boolean).join("\n")
                 : ""
             color: root.resticService && root.resticService.restoreState === "error" ? root.urgent : root.dim
             font.family: root.fontFamily

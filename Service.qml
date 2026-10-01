@@ -242,14 +242,11 @@ Item {
       restorePercent = Number(event.percent)
       return
     }
-    if (event.type === "done") {
-      restorePath = String(event.path || "")
-      restoreFolder = String(event.folder || "")
-    } else if (event.type === "error") {
-      restoreError = elideError(event.error)
-    } else if (event.type !== "cancelled") {
-      return
-    }
+    if (event.type !== "done" && event.type !== "error" && event.type !== "cancelled") return
+    // A failed or cancelled restore names its folder only if it kept files there.
+    restoreFolder = String(event.folder || "")
+    if (event.type === "done") restorePath = String(event.path || "")
+    else if (event.type === "error") restoreError = elideError(event.error)
     restoreState = event.type
     if (notificationsEnabled && event.type !== "cancelled")
       Quickshell.execDetached(Model.restoreNotice(event, restoreName, home))

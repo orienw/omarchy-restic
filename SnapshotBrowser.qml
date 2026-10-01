@@ -518,8 +518,8 @@ Item {
         text: !root.service ? ""
           : root.service.restoreState === "done"
             ? "Restored to " + Model.tildePath(root.service.restorePath, root.service.home)
-          : root.service.restoreState === "cancelled" ? "Restore cancelled"
-          : root.service.restoreError
+          : [root.service.restoreState === "cancelled" ? "Restore cancelled" : root.service.restoreError,
+              Model.partialFiles(root.service.restoreFolder, root.service.home)].filter(Boolean).join("\n")
         color: root.service && root.service.restoreState === "error" ? root.urgent : root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
@@ -529,7 +529,7 @@ Item {
 
       Button {
         id: openButton
-        visible: !!root.service && root.service.restoreState === "done"
+        visible: !!root.service && root.service.restoreFolder !== ""
         text: "Open folder"
         foreground: root.foreground
         fontFamily: root.fontFamily

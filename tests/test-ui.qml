@@ -95,6 +95,7 @@ ShellRoot {
     property real restorePercent: -1
     property string restorePath: ""
     property string restoreError: ""
+    property string restoreFolder: ""
     property var restoreCalls: []
     property var report: ({
       schemaVersion: 1,
