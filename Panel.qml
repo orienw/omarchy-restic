@@ -96,7 +96,7 @@ Panel {
 
   function activate() {
     if (browsingJob) browser.openSelected()
-    else if (cursorIndex >= 0) browse(targetJob())
+    else if (targetJob()) browse(targetJob())
     else if (cursorJobId === "") refreshRepositories()
   }
 
