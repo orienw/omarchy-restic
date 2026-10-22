@@ -143,6 +143,7 @@ Snapshot labels include the source hostname when restic recorded one, so snapsho
 - `↑`/`↓` or `j`/`k` select, `Enter` or `→` opens a folder, `Backspace` or `←` goes up.
 - Click the up arrow next to the path to return to its parent folder.
 - `[` and `]` step to an older or newer snapshot and keep you in the same folder, so you can compare days.
+- Click the snapshot label, or press `S`, to choose any snapshot by date, hostname or ID. Search dates as shown or as `YYYY-MM-DD`.
 - `R` or **Restore** restores the selected file or folder. The selection stays put when you switch snapshots, and if it is not in a snapshot, nothing is restored.
 - `F` or **Restore folder** restores the folder you are in, even an empty one.
 - `C` cancels a running restore, from the browser or the job list.

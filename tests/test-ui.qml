@@ -400,6 +400,24 @@ ShellRoot {
           return
         }
         events.keyClick(Qt.Key_Down, Qt.NoModifier, -1)
+        events.keyClickChar("s", Qt.NoModifier, -1)
+        root.stage = 461
+        return
+      }
+
+      if (root.stage === 461) {
+        if (!browser.choosingSnapshot) return
+        events.keyClick(Qt.Key_Return, Qt.NoModifier, -1)
+        root.stage = 462
+        return
+      }
+
+      if (root.stage === 462) {
+        if (browser.choosingSnapshot) return
+        if (browser.path !== "/home/test" || !browser.selectedEntry || browser.selectedEntry.name !== "Documents") {
+          root.fail("Enter in the snapshot chooser also opened the selected folder")
+          return
+        }
         events.keyClick(Qt.Key_Right, Qt.NoModifier, -1)
         root.stage = 47
         return
@@ -407,13 +425,87 @@ ShellRoot {
 
       if (root.stage === 47) {
         if (browser.loading || browser.path !== "/home/test/Documents" || browser.entries.length !== 1) return
-        events.keyClickChar("[", Qt.NoModifier, -1)
+        events.keyClick(Qt.Key_Down, Qt.NoModifier, -1)
+        events.keyClickChar("s", Qt.NoModifier, -1)
+        root.stage = 471
+        return
+      }
+
+      if (root.stage === 471) {
+        if (!browser.choosingSnapshot) {
+          root.fail("S did not open the snapshot chooser")
+          return
+        }
+        events.keyClickChar("r", Qt.NoModifier, -1)
+        if (fakeService.restoreCalls.length !== 0) {
+          root.fail("typing in snapshot search started a restore")
+          return
+        }
+        events.keyClick(Qt.Key_Backspace, Qt.NoModifier, -1)
+        var date = Qt.formatDateTime(new Date(browser.snapshots[1].time), "yyyy-MM-dd")
+        for (var i = 0; i < date.length; i++) events.keyClickChar(date[i], Qt.NoModifier, -1)
+        events.keyClick(Qt.Key_Return, Qt.NoModifier, -1)
+        root.stage = 472
+        return
+      }
+
+      if (root.stage === 472) {
+        if (browser.loading || browser.snapshotIndex !== 1 || browser.entries.length !== 1) return
+        events.keyClickChar("s", Qt.NoModifier, -1)
+        root.stage = 473
+        return
+      }
+
+      if (root.stage === 473) {
+        var fullId = "b".repeat(64)
+        for (var i = 0; i < fullId.length; i++) events.keyClickChar(fullId[i], Qt.NoModifier, -1)
+        var picker = root.findByName(browser, "snapshotPicker")
+        if (picker.filtered.length !== 1 || picker.filtered[0].value !== fullId) {
+          root.fail("the snapshot chooser could not find a full snapshot ID")
+          return
+        }
+        events.keyClick(Qt.Key_Return, Qt.NoModifier, -1)
+        root.stage = 474
+        return
+      }
+
+      if (root.stage === 474) {
+        if (browser.loading || browser.snapshotIndex !== 0 || browser.entries.length !== 1) return
+        events.keyClickChar("s", Qt.NoModifier, -1)
+        root.stage = 475
+        return
+      }
+
+      if (root.stage === 475) {
+        var displayedDate = Qt.formatDateTime(new Date(browser.snapshots[0].time), "yyyy-MM-dd")
+        for (var i = 0; i < displayedDate.length; i++) events.keyClickChar(displayedDate[i], Qt.NoModifier, -1)
+        var picker = root.findByName(browser, "snapshotPicker")
+        if (picker.filtered.length !== 1 || picker.filtered[0].value !== browser.snapshots[0].id) {
+          root.fail("the displayed date also matched another snapshot's UTC date")
+          return
+        }
+        events.keyClick(Qt.Key_Return, Qt.NoModifier, -1)
+        root.stage = 476
+        return
+      }
+
+      if (root.stage === 476) {
+        if (browser.choosingSnapshot) return
+        browser.switchSnapshot(1)
         root.stage = 48
         return
       }
 
       if (root.stage === 48) {
         if (browser.loading || browser.snapshotIndex !== 1 || browser.entries.length !== 1) return
+        var picker = root.findByName(browser, "snapshotPicker")
+        browser.switchSnapshot(-1)
+        if (picker.value !== "b".repeat(64)) {
+          root.fail("arrow navigation left the chooser label on the previous snapshot")
+          return
+        }
+        browser.switchSnapshot(1)
+        if (!browser.listingReady) return
         if (browser.path !== "/home/test/Documents") {
           root.fail("switching snapshots left the current folder")
           return

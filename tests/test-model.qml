@@ -304,6 +304,21 @@ ShellRoot {
         root.fail("an unparseable snapshot time was not labeled")
         return
       }
+      var searchSnapshot = {time: "2026-08-16T03:30:00Z", id: "b".repeat(64)}
+      var localDate = Qt.formatDateTime(new Date(searchSnapshot.time), "yyyy-MM-dd")
+      if (localDate !== "2026-08-15") {
+        root.fail("the snapshot search fixture requires the Los Angeles timezone")
+        return
+      }
+      var searchText = Model.snapshotSearchText(searchSnapshot)
+      if (searchText.indexOf(localDate) === -1 || searchText.indexOf(searchSnapshot.id) === -1) {
+        root.fail("snapshot search did not include the displayed local date and full ID")
+        return
+      }
+      if (searchText.indexOf("2026-08-16") !== -1) {
+        root.fail("snapshot search included a conflicting UTC date")
+        return
+      }
       var done = Model.restoreNotice({ type: "done", path: "/home/test/Restored/<i>x</i>", folder: "/home/test/Restored" },
         "<i>x</i>", "/home/test")
       if (done[7] !== "Restored <i>x</i>" || done[8] !== "~/Restored/&lt;i&gt;x&lt;/i&gt;"

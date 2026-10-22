@@ -356,6 +356,12 @@ function snapshotLabel(snapshot) {
   return [label, snapshot.hostname, snapshot.shortId].filter(Boolean).join(" · ")
 }
 
+function snapshotSearchText(snapshot) {
+  var time = new Date(Date.parse(String(snapshot.time || "")))
+  var localDate = isFinite(time.getTime()) ? Qt.formatDateTime(time, "yyyy-MM-dd") : ""
+  return [localDate, snapshot.id].filter(Boolean).join(" · ")
+}
+
 function tildePath(path, home) {
   var value = String(path || "")
   var prefix = String(home || "")

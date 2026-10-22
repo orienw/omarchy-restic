@@ -151,6 +151,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      blocked: !!root.browsingJob && browser.choosingSnapshot
       onActivateRequested: root.activate()
       onCloseRequested: root.browsingJob ? root.stopBrowsing() : root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
@@ -183,6 +184,7 @@ Panel {
         dim: root.dim
         fontFamily: root.fontFamily
         onCloseRequested: root.stopBrowsing()
+        onNavigationFocusRequested: if (root.opened) keyCatcher.forceActiveFocus()
       }
 
       Flickable {

@@ -58,8 +58,12 @@ Flickable {
     : null
   readonly property bool folderRestorable: listingReady && folderExists && path !== "/" && Model.exactPath(path)
   readonly property bool restoring: !!service && service.restoreState === "running"
+  readonly property bool choosingSnapshot: snapshotPicker.popupOpen
 
   signal closeRequested()
+  signal navigationFocusRequested()
+
+  onVisibleChanged: if (!visible) snapshotPicker.close()
 
   implicitHeight: column.implicitHeight
   contentWidth: width
@@ -71,6 +75,7 @@ Flickable {
   ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
   function open(target) {
+    snapshotPicker.close()
     session++
     contentY = 0
     openingKey = ""
@@ -225,6 +230,12 @@ Flickable {
   function switchSnapshot(delta) {
     var next = snapshotIndex + delta
     if (next < 0 || next >= snapshots.length) return
+    chooseSnapshot(snapshots[next].id)
+  }
+
+  function chooseSnapshot(id) {
+    var next = snapshots.findIndex(function(item) { return item.id === id })
+    if (next < 0 || next === snapshotIndex) return
     snapshotIndex = next
     navigate(path)
   }
@@ -261,6 +272,11 @@ Flickable {
     else if (text === "r" || text === "R") restoreSelected()
     else if (text === "f" || text === "F") restoreFolder()
     else if (text === "c" || text === "C") cancelRestore()
+    else if (text === "s" || text === "S") {
+      if (snapshots.length === 0) return
+      contentY = 0
+      snapshotPicker.open()
+    }
     else if (text === "\b") goUp()
   }
 
@@ -310,18 +326,27 @@ Flickable {
         onClicked: root.switchSnapshot(1)
       }
 
-      Text {
-        textFormat: Text.PlainText
+      SearchableDropdown {
+        id: snapshotPicker
+        objectName: "snapshotPicker"
         width: parent.width - olderButton.width - newerButton.width - parent.spacing * 2
-        text: root.snapshots.length > 0
-          ? Model.snapshotLabel(root.snapshot)
-          : (root.loading ? "Loading snapshots..." : "No snapshots")
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        horizontalAlignment: Text.AlignHCenter
-        elide: Text.ElideRight
+        showLabel: false
+        value: root.snapshot ? String(root.snapshot.id) : ""
+        triggerLabel: root.loading ? "Loading snapshots..." : "No snapshots"
+        options: root.snapshots.map(function(item) {
+          return { value: item.id, label: Model.snapshotLabel(item),
+            description: Model.snapshotSearchText(item) }
+        })
+        placeholderText: "Date, host or snapshot ID..."
+        enabled: root.snapshots.length > 0
+        foreground: root.foreground
+        fontFamily: root.fontFamily
         anchors.verticalCenter: parent.verticalCenter
+        onChanged: function(value) {
+          root.chooseSnapshot(value)
+          snapshotPicker.value = Qt.binding(function() { return root.snapshot ? String(root.snapshot.id) : "" })
+        }
+        onPopupOpenChanged: if (!popupOpen) Qt.callLater(function() { root.navigationFocusRequested() })
       }
 
       PanelActionButton {
@@ -588,7 +613,7 @@ Flickable {
       textFormat: Text.PlainText
       width: parent.width
       text: root.restoring ? "C cancel restore · Esc back to jobs"
-        : "⏎ open · ⌫ up · [ ] snapshot · R restore · F folder"
+        : "⏎ open · ⌫ up · [ ] snapshot · S choose · R restore · F folder"
       color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption

@@ -90,7 +90,7 @@ ShellRoot {
           root.fail("the file was not selectable")
           return
         }
-        browser.switchSnapshot(1)
+        browser.chooseSnapshot("a".repeat(64))
         if (browser.restoreTarget !== null) {
           root.fail("a restore target was offered before the older listing loaded")
           return
