@@ -217,7 +217,7 @@ ShellRoot {
       var service = serviceLoader.item
       if (service.startingJob !== "") return
       stop()
-      if (service.actionError.indexOf("Could not start Home") !== 0) {
+      if (service.actionError !== "Could not start Home: Fixture backup start failed") {
         root.fail("failed backup start was not reported: " + service.actionError)
         return
       }

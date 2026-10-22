@@ -6,11 +6,25 @@ TEST_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_DIR=$(cd "$TEST_DIR/.." && pwd)
 TEST_RUNTIME=$(mktemp -d /tmp/omarchy-restic-runtime.XXXXXX)
 IMPORT_ROOT="$TEST_RUNTIME/imports"
+TEST_BIN="$TEST_RUNTIME/bin"
 trap 'rm -rf -- "$TEST_RUNTIME"' EXIT
 chmod 700 "$TEST_RUNTIME"
-mkdir -p "$IMPORT_ROOT/qs"
+mkdir -p "$IMPORT_ROOT/qs" "$TEST_BIN"
 ln -s /usr/share/omarchy/shell/Ui "$IMPORT_ROOT/qs/Ui"
 ln -s /usr/share/omarchy/shell/Commons "$IMPORT_ROOT/qs/Commons"
+
+cat > "$TEST_BIN/systemctl" <<'PY'
+#!/usr/bin/env python3
+import sys
+
+expected = ["--user", "start", "--no-block", "--", "omarchy-restic-test-missing.service"]
+if sys.argv[1:] != expected:
+    print("Unexpected test systemctl arguments", file=sys.stderr)
+    sys.exit(2)
+print("Fixture backup start failed", file=sys.stderr)
+sys.exit(1)
+PY
+chmod 755 "$TEST_BIN/systemctl"
 
 run_test() {
   local file=$1
@@ -19,6 +33,7 @@ run_test() {
   local output
 
   if ! output=$(
+    PATH="$TEST_BIN:$PATH" \
     WAYLAND_DISPLAY= \
     XDG_RUNTIME_DIR="$TEST_RUNTIME" \
     QT_QPA_PLATFORM=offscreen \
