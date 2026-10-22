@@ -353,7 +353,7 @@ function snapshotLabel(snapshot) {
     ? months[time.getMonth()] + " " + time.getDate() + ", " + time.getFullYear()
       + " " + pad(time.getHours()) + ":" + pad(time.getMinutes())
     : "Unknown time"
-  return label + " · " + String(snapshot.shortId || "")
+  return [label, snapshot.hostname, snapshot.shortId].filter(Boolean).join(" · ")
 }
 
 function tildePath(path, home) {
