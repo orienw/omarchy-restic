@@ -149,6 +149,8 @@ Snapshot labels include the source hostname when restic recorded one, so snapsho
 - `C` cancels a running restore, from the browser or the job list.
 - `Esc` returns to the job list.
 
+Hover over an abbreviated filename or path to see it in full. The snapshot label also shows its full ID on hover.
+
 Each restore lands in its own folder, such as `~/Restored/Home 2026-09-20 0300/notes.md`. Move files back into place yourself, where you can see what you are replacing. A notification says when the restore is done, and clicking it opens the folder. A running restore can be cancelled and keeps going if you close the panel. If it fails or is cancelled partway, the files it already restored stay in its folder, and the browser says where. When a failed restore kept files, clicking its notification opens that folder. If the shell restarts or the plugin reloads mid-restore, restic is told to stop, releases its repository lock, and leaves the partial restore in its folder. If your job's restic command is a wrapper script that does not `exec` restic, the restore instead runs to completion in the background and then releases its lock.
 
 The latest restore result and its **Open folder** action remain in the job list and browser until you dismiss it or start another restore.

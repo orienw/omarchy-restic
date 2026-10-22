@@ -347,6 +347,12 @@ Flickable {
           snapshotPicker.value = Qt.binding(function() { return root.snapshot ? String(root.snapshot.id) : "" })
         }
         onPopupOpenChanged: if (!popupOpen) Qt.callLater(function() { root.navigationFocusRequested() })
+
+        HoverHandler { id: snapshotHover }
+        FullTextTip {
+          visible: snapshotHover.hovered && !!root.snapshot && !snapshotPicker.popupOpen
+          text: root.snapshot ? Model.snapshotLabel(root.snapshot) + "\n" + root.snapshot.id : ""
+        }
       }
 
       PanelActionButton {
@@ -377,6 +383,7 @@ Flickable {
       }
 
       Text {
+        id: pathLabel
         textFormat: Text.PlainText
         width: parent.width - upButton.width - parent.spacing
         text: Model.tildePath(root.path, root.service ? root.service.home : "")
@@ -385,6 +392,12 @@ Flickable {
         font.pixelSize: Style.font.caption
         elide: Text.ElideMiddle
         anchors.verticalCenter: parent.verticalCenter
+
+        HoverHandler { id: pathHover }
+        FullTextTip {
+          visible: pathHover.hovered && pathLabel.truncated
+          text: root.path
+        }
       }
     }
 
@@ -447,6 +460,7 @@ Flickable {
             }
 
             Text {
+              id: entryName
               textFormat: Text.PlainText
               width: parent.width - entryIcon.width - entryDetail.width - parent.spacing * 2
               text: String(row.modelData.name || "")
@@ -454,6 +468,12 @@ Flickable {
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               elide: Text.ElideMiddle
+
+              HoverHandler { id: entryNameHover }
+              FullTextTip {
+                visible: entryNameHover.hovered && entryName.truncated
+                text: String(row.modelData.name || "")
+              }
             }
 
             Text {
@@ -539,6 +559,12 @@ Flickable {
         enabled: !root.restoring && !!root.restoreTarget
         opacity: enabled || root.restoring ? 1 : 0.5
         onClicked: root.restoreSelected()
+
+        HoverHandler { id: restoreHover }
+        FullTextTip {
+          visible: restoreHover.hovered && restoreMetrics.elidedText !== restoreMetrics.text
+          text: root.restoreLabel()
+        }
       }
 
       Button {
@@ -619,6 +645,23 @@ Flickable {
       font.pixelSize: Style.font.caption
       horizontalAlignment: Text.AlignHCenter
       wrapMode: Text.WordWrap
+    }
+  }
+
+  component FullTextTip: PanelToolTip {
+    id: tip
+    width: Math.min(implicitWidth, root.width)
+    contentItem: Text {
+      textFormat: Text.PlainText
+      text: tip.text
+      color: tip.panelForeground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+      leftPadding: Style.space(8)
+      rightPadding: Style.space(8)
+      topPadding: Style.space(6)
+      bottomPadding: Style.space(6)
     }
   }
 
