@@ -232,6 +232,10 @@ Item {
       service.restoreEntry(job.id, snapshot, { name: Model.baseName(path), path: path, type: "dir" })
   }
 
+  function cancelRestore() {
+    if (restoring) service.cancelRestore()
+  }
+
   function restoreLabel() {
     if (restoring) {
       var percent = service.restorePercent >= 0 ? " " + Math.round(service.restorePercent * 100) + "%" : ""
@@ -249,6 +253,7 @@ Item {
     else if (text === "]") switchSnapshot(-1)
     else if (text === "r" || text === "R") restoreSelected()
     else if (text === "f" || text === "F") restoreFolder()
+    else if (text === "c" || text === "C") cancelRestore()
     else if (text === "\b") goUp()
   }
 
@@ -517,10 +522,11 @@ Item {
         id: cancelButton
         visible: root.restoring
         text: "Cancel"
+        tooltipText: "Cancel restore  C"
         foreground: root.foreground
         fontFamily: root.fontFamily
         bordered: true
-        onClicked: root.service.cancelRestore()
+        onClicked: root.cancelRestore()
       }
     }
 
@@ -560,7 +566,8 @@ Item {
     Text {
       textFormat: Text.PlainText
       width: parent.width
-      text: "⏎ open · ⌫ up · [ ] snapshot · R restore · F folder"
+      text: root.restoring ? "C cancel restore · Esc back to jobs"
+        : "⏎ open · ⌫ up · [ ] snapshot · R restore · F folder"
       color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption

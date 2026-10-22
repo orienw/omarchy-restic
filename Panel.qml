@@ -170,6 +170,7 @@ Panel {
         else if (text === "r" || text === "R") root.refreshRepositories()
         else if (text === "b" || text === "B") root.backUp(root.targetJob())
         else if (text === "d" || text === "D") root.toggleTargetDetails()
+        else if ((text === "c" || text === "C") && root.resticService) root.resticService.cancelRestore()
       }
 
       SnapshotBrowser {

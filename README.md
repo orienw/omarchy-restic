@@ -143,6 +143,7 @@ Choose **Browse snapshots** on a job, or select the job and press `Enter`. The b
 - `[` and `]` step to an older or newer snapshot and keep you in the same folder, so you can compare days.
 - `R` or **Restore** restores the selected file or folder. The selection stays put when you switch snapshots, and if it is not in a snapshot, nothing is restored.
 - `F` or **Restore folder** restores the folder you are in, even an empty one.
+- `C` cancels a running restore, from the browser or the job list.
 - `Esc` returns to the job list.
 
 Each restore lands in its own folder, such as `~/Restored/Home 2026-09-20 0300/notes.md`. Move files back into place yourself, where you can see what you are replacing. A notification says when the restore is done, and clicking it opens the folder. A running restore can be cancelled and keeps going if you close the panel. If it fails or is cancelled partway, the files it already restored stay in its folder, and the browser says where. When a failed restore kept files, clicking its notification opens that folder. If the shell restarts or the plugin reloads mid-restore, restic is told to stop, releases its repository lock, and leaves the partial restore in its folder. If your job's restic command is a wrapper script that does not `exec` restic, the restore instead runs to completion in the background and then releases its lock.

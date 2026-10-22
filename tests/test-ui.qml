@@ -97,6 +97,7 @@ ShellRoot {
     property string restoreError: ""
     property string restoreFolder: ""
     property var restoreCalls: []
+    property int cancelCalls: 0
     property var report: ({
       schemaVersion: 1,
       generatedAt: generatedAt,
@@ -156,7 +157,7 @@ ShellRoot {
     }
 
     function clearRestore() {}
-    function cancelRestore() {}
+    function cancelRestore() { cancelCalls++ }
     function openRestoreFolder() {}
   }
 
@@ -425,6 +426,13 @@ ShellRoot {
             + JSON.stringify(fakeService.restoreCalls))
           return
         }
+        fakeService.restoreState = "running"
+        events.keyClickChar("c", Qt.NoModifier, -1)
+        if (fakeService.cancelCalls !== 1) {
+          root.fail("C did not cancel the running restore")
+          return
+        }
+        fakeService.restoreState = ""
         var upButton = root.findByName(browser, "parentFolderButton")
         if (!upButton || !events.mouseClick(upButton, upButton.width / 2, upButton.height / 2,
             Qt.LeftButton, Qt.NoModifier, -1)) {
