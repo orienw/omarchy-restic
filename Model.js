@@ -369,6 +369,15 @@ function partialFiles(folder, home) {
   return folder ? "Partial files are in " + tildePath(folder, home) : ""
 }
 
+function restoreResult(service) {
+  if (!service) return ""
+  if (service.restoreState === "running") return "Restoring " + service.restoreName + "..."
+  if (service.restoreState === "done") return "Restored to " + tildePath(service.restorePath, service.home)
+  if (service.restoreState !== "error" && service.restoreState !== "cancelled") return ""
+  return [service.restoreState === "cancelled" ? "Restore cancelled" : service.restoreError,
+    partialFiles(service.restoreFolder, service.home)].filter(Boolean).join("\n")
+}
+
 function restoreNotice(event, name, home) {
   var base = ["omarchy-notification-send", "--app-name", "Restic", "-g", "󰁯", "-u", "normal"]
   if (event.type === "done")

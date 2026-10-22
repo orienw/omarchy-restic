@@ -19,18 +19,19 @@ ShellRoot {
     property string jobsFile: "/nonexistent/jobs.json"
     property string browsePath: Quickshell.env("RESTIC_PLUGIN_DIR") + "/tests/fake-browse.py"
     property string home: "/home/test"
-    property string restoreState: ""
+    property string restoreState: "done"
     property string restoreName: ""
     property real restorePercent: -1
     property string restoreError: ""
     property string restoreFolder: ""
+    property string restorePath: "/home/test/Restored/Home/notes.md"
     property var restoreCalls: []
 
     function restoreEntry(jobId, snapshot, entry) {
       restoreCalls = restoreCalls.concat([[snapshot.shortId, entry.path, entry.type]])
       return "started"
     }
-    function clearRestore() {}
+    function clearRestore() { restoreState = "" }
   }
 
   Loader {
@@ -58,6 +59,10 @@ ShellRoot {
 
       if (root.stage === 0) {
         if (browser.path !== "/home/test" || browser.entries.length !== 4) return
+        if (fakeService.restoreState !== "done") {
+          root.fail("opening the browser discarded the background restore result")
+          return
+        }
         browser.navigate("/home/test/Documents", "")
         root.stage = 1
         return

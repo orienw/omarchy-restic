@@ -76,7 +76,6 @@ Item {
     selectedIndex = -1
     truncated = false
     error = ""
-    if (service) service.clearRestore()
     request({ kind: "snapshots", args: ["snapshots"] })
   }
 
@@ -530,36 +529,43 @@ Item {
       }
     }
 
-    Row {
+    Column {
       visible: !!root.service && root.service.restoreState !== "" && root.service.restoreState !== "running"
       width: parent.width
       spacing: Style.space(8)
 
       Text {
         textFormat: Text.PlainText
-        width: parent.width - (openButton.visible ? openButton.width + parent.spacing : 0)
-        text: !root.service ? ""
-          : root.service.restoreState === "done"
-            ? "Restored to " + Model.tildePath(root.service.restorePath, root.service.home)
-          : [root.service.restoreState === "cancelled" ? "Restore cancelled" : root.service.restoreError,
-              Model.partialFiles(root.service.restoreFolder, root.service.home)].filter(Boolean).join("\n")
+        objectName: "restoreResultText"
+        width: parent.width
+        text: Model.restoreResult(root.service)
         color: root.service && root.service.restoreState === "error" ? root.urgent : root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         wrapMode: Text.WrapAtWordBoundaryOrAnywhere
-        anchors.verticalCenter: parent.verticalCenter
       }
 
-      Button {
-        id: openButton
-        visible: !!root.service && root.service.restoreFolder !== ""
-        text: "Open folder"
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        fontSize: Style.font.caption
-        bordered: true
-        anchors.verticalCenter: parent.verticalCenter
-        onClicked: root.service.openRestoreFolder()
+      Row {
+        spacing: Style.space(8)
+
+        Button {
+          visible: !!root.service && root.service.restoreFolder !== ""
+          text: "Open folder"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          bordered: true
+          onClicked: root.service.openRestoreFolder()
+        }
+
+        Button {
+          text: "Dismiss"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          bordered: true
+          onClicked: root.service.clearRestore()
+        }
       }
     }
 

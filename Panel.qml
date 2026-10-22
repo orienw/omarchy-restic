@@ -245,21 +245,46 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
-          Text {
-            textFormat: Text.PlainText
-            visible: text !== ""
+          Column {
+            visible: !!root.resticService && root.resticService.restoreState !== ""
             width: parent.width
-            text: root.resticService && root.resticService.restoreState === "running"
-              ? "Restoring " + root.resticService.restoreName + "..."
-              : root.resticService && root.resticService.restoreState === "error"
-                ? [root.resticService.restoreError,
-                   Model.partialFiles(root.resticService.restoreFolder, root.resticService.home)]
-                  .filter(Boolean).join("\n")
-                : ""
-            color: root.resticService && root.resticService.restoreState === "error" ? root.urgent : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
+            spacing: Style.space(8)
+
+            Text {
+              textFormat: Text.PlainText
+              objectName: "restoreResultText"
+              width: parent.width
+              text: Model.restoreResult(root.resticService)
+              color: root.resticService && root.resticService.restoreState === "error" ? root.urgent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+            }
+
+            Row {
+              spacing: Style.space(8)
+
+              Button {
+                visible: !!root.resticService && root.resticService.restoreFolder !== ""
+                text: "Open folder"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                bordered: true
+                onClicked: root.resticService.openRestoreFolder()
+              }
+
+              Button {
+                readonly property bool restoring: !!root.resticService && root.resticService.restoreState === "running"
+                text: restoring ? "Cancel" : "Dismiss"
+                tooltipText: restoring ? "Cancel restore  C" : ""
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                bordered: true
+                onClicked: restoring ? root.resticService.cancelRestore() : root.resticService.clearRestore()
+              }
+            }
           }
 
           BorderSurface {
