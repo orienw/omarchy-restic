@@ -351,6 +351,15 @@ ShellRoot {
           root.fail("the backup key did not start the selected job")
           return
         }
+        var selectedPanel = root.findByName(widget, "resticPanel")
+        var selectedCard = selectedPanel.jobCard("home")
+        var expanded = selectedCard.detailsExpanded
+        events.keyClickChar("d", Qt.NoModifier, -1)
+        if (selectedCard.detailsExpanded === expanded) {
+          root.fail("D did not toggle the selected job's details")
+          return
+        }
+        events.keyClickChar("d", Qt.NoModifier, -1)
         fakeService.startingJob = "home"
         var startingButton = root.findByName(panel.jobCard("home"), "backupButton-home")
         if (startingButton.enabled || startingButton.text !== "Starting...") {

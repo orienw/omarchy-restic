@@ -131,6 +131,12 @@ Panel {
     detailsOverrides[String(jobId)] = expanded === true
   }
 
+  function toggleTargetDetails() {
+    var job = targetJob()
+    var card = job ? jobCard(job.id) : null
+    if (card) card.toggleDetails()
+  }
+
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
@@ -163,6 +169,7 @@ Panel {
         if (root.browsingJob) browser.handleText(text)
         else if (text === "r" || text === "R") root.refreshRepositories()
         else if (text === "b" || text === "B") root.backUp(root.targetJob())
+        else if (text === "d" || text === "D") root.toggleTargetDetails()
       }
 
       SnapshotBrowser {
@@ -496,7 +503,7 @@ Panel {
       Text {
         textFormat: Text.PlainText
         id: detailsLabel
-        text: "Details"
+        text: "Details  D"
         color: detailsHandler.containsMouse ? root.foreground : root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall

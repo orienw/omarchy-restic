@@ -132,6 +132,7 @@ Paths expand `~` and environment variables. Backend credentials needed by restic
 - Right click forces a read-only repository refresh.
 - Press `R` in the panel to force a repository refresh.
 - Press `↑`/`↓` or `j`/`k` to select a job, then `B` to back it up or `Enter` to browse its snapshots. With a single job, neither needs a selection.
+- Press `D` to expand or collapse the selected job's details.
 
 ## Getting files back
 
