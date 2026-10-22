@@ -179,6 +179,9 @@ def restore_label(job: dict[str, Any], snapshot_time: str) -> str:
     moment = status.parse_iso(snapshot_time)
     stamp = moment.astimezone().strftime("%Y-%m-%d %H%M") if moment else "snapshot"
     name = re.sub(r"[/\0]+", "-", job["name"]).strip().lstrip(".") or job["id"]
+    # Keep the timestamp and leave room for unique_directory's largest suffix.
+    name_bytes = 255 - len(stamp) - 1 - len(" 999")
+    name = name.encode("utf-8")[:name_bytes].decode("utf-8", errors="ignore").rstrip()
     return f"{name} {stamp}"
 
 

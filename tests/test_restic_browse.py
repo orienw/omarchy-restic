@@ -170,6 +170,21 @@ class ResticBrowseTest(unittest.TestCase):
         self.assertNotIn("/", label)
         self.assertFalse(label.startswith("."))
 
+    def test_long_restore_labels_keep_the_timestamp_and_collision_suffix(self):
+        snapshot_time = "2026-08-17T03:30:00Z"
+        stamp = restic_browse.restore_label({"id": "home", "name": "Home"}, snapshot_time)[4:]
+        for index, name in enumerate(("a" * 300, "家" * 100, "🙂" * 100)):
+            with self.subTest(name=name[:1]):
+                label = restic_browse.restore_label({"id": "home", "name": name}, snapshot_time)
+                root = self.root / f"targets-{index}"
+                first = restic_browse.unique_directory(root, label)
+                second = restic_browse.unique_directory(root, label)
+
+                self.assertTrue(first.name.startswith(name[:10]))
+                self.assertTrue(first.name.endswith(stamp))
+                self.assertEqual(second.name, label + " 2")
+                self.assertLessEqual(len((label + " 999").encode("utf-8")), 255)
+
     def test_invalid_snapshots_and_paths_are_rejected(self):
         for value in ("relative", "/home/../etc", "/home/", "/home\0x", "//home", "/home/name-\ufffd"):
             with self.subTest(path=value), self.assertRaises(restic_browse.BrowseError):
