@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+# Omarchy reloads the plugin when files in its directory change.
+sys.dont_write_bytecode = True
 import restic_status as status
 
 

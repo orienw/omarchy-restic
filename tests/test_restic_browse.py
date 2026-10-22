@@ -120,6 +120,24 @@ class ResticBrowseTest(unittest.TestCase):
     def restic_args(self) -> list[str]:
         return json.loads(self.log.read_text(encoding="utf-8"))
 
+    def test_first_helper_run_leaves_plugin_files_unchanged(self):
+        scripts = self.root / "plugin" / "scripts"
+        scripts.mkdir(parents=True)
+        original = {}
+        for name in ("restic_browse.py", "restic_status.py"):
+            shutil.copy2(PROJECT_DIR / "scripts" / name, scripts / name)
+            original[name] = (scripts / name).read_bytes()
+
+        result = subprocess.run(
+            [sys.executable, "-E", str(scripts / "restic_browse.py"), "--help"],
+            capture_output=True, text=True, timeout=10,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(path.name for path in scripts.iterdir()), sorted(original))
+        for name, contents in original.items():
+            self.assertEqual((scripts / name).read_bytes(), contents)
+
     def test_file_restore_includes_only_the_escaped_file_from_its_parent(self):
         event = self.restore("/home/test/x*y [1]?.txt", "file")
 
