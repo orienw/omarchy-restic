@@ -416,7 +416,12 @@ ShellRoot {
             + JSON.stringify(fakeService.restoreCalls))
           return
         }
-        events.keyClick(Qt.Key_Left, Qt.NoModifier, -1)
+        var upButton = root.findByName(browser, "parentFolderButton")
+        if (!upButton || !events.mouseClick(upButton, upButton.width / 2, upButton.height / 2,
+            Qt.LeftButton, Qt.NoModifier, -1)) {
+          root.fail("the parent folder button did not accept pointer input")
+          return
+        }
         root.stage = 49
         return
       }

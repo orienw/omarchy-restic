@@ -324,14 +324,31 @@ Item {
       }
     }
 
-    Text {
-      textFormat: Text.PlainText
+    Row {
       width: parent.width
-      text: Model.tildePath(root.path, root.service ? root.service.home : "")
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      elide: Text.ElideMiddle
+      spacing: Style.space(8)
+
+      PanelActionButton {
+        id: upButton
+        objectName: "parentFolderButton"
+        iconText: "󰁝"
+        tooltipText: "Up one folder  ← / Backspace"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        enabled: !!root.snapshot && root.path !== "/"
+        onClicked: root.goUp()
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        width: parent.width - upButton.width - parent.spacing
+        text: Model.tildePath(root.path, root.service ? root.service.home : "")
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideMiddle
+        anchors.verticalCenter: parent.verticalCenter
+      }
     }
 
     PanelSeparator {
