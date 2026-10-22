@@ -746,13 +746,15 @@ def wrapper_text(exec_path: str, argv: str) -> str:
     return ""
 
 
-def flag_value(text: str, flag: str, variables: dict[str, str]) -> str | None:
-    pattern = re.compile(
-        rf"(?:^|\s){re.escape(flag)}(?:=|\s+)(\"[^\"]*\"|'[^']*'|[^\s\\;]+)",
-        re.MULTILINE,
-    )
-    match = pattern.search(text.replace("\\\n", " "))
-    return expand_static_value(match.group(1), variables) if match else None
+def flag_value(tokens: list[str], flag: str, variables: dict[str, str]) -> str | None:
+    for index, token in enumerate(tokens):
+        if token == "--":
+            break
+        if token == flag and index + 1 < len(tokens):
+            return expand_static_value(shlex.quote(tokens[index + 1]), variables)
+        if token.startswith(flag + "="):
+            return expand_static_value(shlex.quote(token[len(flag) + 1:]), variables)
+    return None
 
 
 def shell_command_segments(text: str) -> list[list[str]]:
@@ -893,24 +895,30 @@ def shell_command_argument(tokens: list[str]) -> str | None:
     return None
 
 
-def backup_command_segment(tokens: list[str]) -> bool:
+def backup_command_segment(tokens: list[str]) -> list[str] | None:
     if restic_subcommand(tokens) == "backup":
-        return True
+        return tokens[command_index(tokens):]
     command = shell_command_argument(tokens)
     if command is None:
-        return False
-    return any(
-        restic_subcommand(nested) == "backup"
+        return None
+    return next((
+        nested[command_index(nested):]
         for nested in shell_command_segments(command)
-    )
+        if restic_subcommand(nested) == "backup"
+    ), None)
+
+
+def restic_backup_tokens(exec_text: str, script_text: str) -> list[str] | None:
+    return next((
+        segment
+        for text in [argv for _, argv in exec_entries(exec_text)] + [script_text]
+        for tokens in shell_command_segments(text)
+        if (segment := backup_command_segment(tokens))
+    ), None)
 
 
 def restic_backup_command(exec_text: str, script_text: str) -> bool:
-    return any(
-        backup_command_segment(tokens)
-        for text in [argv for _, argv in exec_entries(exec_text)] + [script_text]
-        for tokens in shell_command_segments(text)
-    )
+    return restic_backup_tokens(exec_text, script_text) is not None
 
 
 def discovered_name(description: str, service: str) -> str:
@@ -1038,7 +1046,8 @@ def discovered_job(
         for path, arguments in entries
         if (text := wrapper_text(path, arguments))
     )
-    if not restic_backup_command(exec_text, script_text):
+    backup_tokens = restic_backup_tokens(exec_text, script_text)
+    if backup_tokens is None:
         return None
 
     variables = static_variables()
@@ -1048,12 +1057,11 @@ def discovered_job(
         parse_assignments(read_static_text(path), variables)
     parse_assignments(script_text, variables)
 
-    command_text = exec_text + "\n" + script_text
-    repository = flag_value(command_text, "--repository-file", variables)
-    password = flag_value(command_text, "--password-file", variables)
+    repository = flag_value(backup_tokens, "--repository-file", variables)
+    password = flag_value(backup_tokens, "--password-file", variables)
     repository = repository or variables.get("RESTIC_REPOSITORY_FILE", "")
     password = password or variables.get("RESTIC_PASSWORD_FILE", "")
-    tag = flag_value(command_text, "--tag", variables) or ""
+    tag = flag_value(backup_tokens, "--tag", variables) or ""
 
     executable = "restic"
     direct_restic = next(

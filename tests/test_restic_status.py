@@ -769,6 +769,32 @@ class ResticStatusTest(unittest.TestCase):
                 self.assertEqual(recovered["overallStatus"], "healthy")
                 self.assertEqual(recovered["jobs"][1]["source"], "systemd")
 
+    def test_discovery_takes_options_only_from_the_backup_command(self):
+        old_options = "--repository-file /old/repo --password-file /old/password --tag old"
+        prefixes = [
+            f"# Previous command: restic backup {old_options} /home",
+            f"restic forget {old_options}",
+            f'echo "restic backup {old_options} /home"',
+        ]
+        commands = [
+            '"$RESTIC" backup --tag="current tag" /home',
+            '"$RESTIC" --repository-file "$RESTIC_REPOSITORY_FILE" backup '
+            '--password-file="$RESTIC_PASSWORD_FILE" --tag "current tag" /home',
+        ]
+        script = self.discovery_script()
+        assignments = script.read_text().rsplit("\n", 1)[0]
+        for prefix in prefixes:
+            for command in commands:
+                with self.subTest(prefix=prefix, command=command):
+                    script.write_text("\n".join([assignments, prefix, command]))
+                    job = restic_status.discovered_job(
+                        "restic-documents.service", "restic-documents.timer", DiscoveryRunner(script), 5,
+                    )
+                    self.assertEqual(job["repositoryFile"], str(self.repository))
+                    self.assertEqual(job["passwordFile"], str(self.password))
+                    self.assertEqual(job["tag"], "current tag")
+                    self.assertEqual(job["discoveryError"], "")
+
     def test_wrapper_inspection_does_not_read_restic_option_paths(self):
         argv = " ".join(
             (
