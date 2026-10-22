@@ -13,6 +13,15 @@ ShellRoot {
     Qt.exit(1)
   }
 
+  function findByName(parent, name) {
+    if (parent.objectName === name) return parent
+    for (var i = 0; parent.children && i < parent.children.length; i++) {
+      var match = findByName(parent.children[i], name)
+      if (match) return match
+    }
+    return null
+  }
+
   QtObject {
     id: fakeService
 
@@ -34,13 +43,20 @@ ShellRoot {
     function clearRestore() { restoreState = "" }
   }
 
-  Loader {
-    id: loader
-    width: 420
-    source: "file://" + Quickshell.env("RESTIC_PLUGIN_DIR") + "/SnapshotBrowser.qml"
-    onLoaded: {
-      item.service = fakeService
-      item.open({ id: "home", name: "Home" })
+  FloatingWindow {
+    visible: true
+    implicitWidth: 420
+    implicitHeight: 600
+
+    Loader {
+      id: loader
+      width: 420
+      height: 600
+      source: "file://" + Quickshell.env("RESTIC_PLUGIN_DIR") + "/SnapshotBrowser.qml"
+      onLoaded: {
+        item.service = fakeService
+        item.open({ id: "home", name: "Home" })
+      }
     }
   }
 
@@ -286,6 +302,29 @@ ShellRoot {
         }
         root.stage = 8
         return
+      }
+
+      if (root.stage === 8) {
+        loader.height = 400
+        fakeService.restoreState = "error"
+        fakeService.restoreError = "A long repository error while restoring files. ".repeat(10)
+        root.stage = 9
+        return
+      }
+
+      if (root.stage === 9) {
+        if (!browser.interactive || browser.contentHeight <= browser.height) {
+          root.fail("a short browser could not scroll to its restore result")
+          return
+        }
+        browser.contentY = browser.contentHeight - browser.height
+        var dismiss = root.findByName(browser, "dismissRestoreButton")
+        var point = dismiss.mapToItem(browser, 0, 0)
+        if (point.y < 0 || point.y + dismiss.height > browser.height) {
+          root.fail("the restore result action was outside the scrolled browser: "
+            + [point.y, dismiss.height, browser.height, browser.contentHeight, browser.contentY].join(", "))
+          return
+        }
       }
 
       console.log("browser tests passed")

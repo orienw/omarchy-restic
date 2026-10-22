@@ -9,7 +9,7 @@ import "Model.js" as Model
 
 // qmllint disable missing-property
 
-Item {
+Flickable {
   id: root
 
   property var service: null
@@ -62,9 +62,17 @@ Item {
   signal closeRequested()
 
   implicitHeight: column.implicitHeight
+  contentWidth: width
+  contentHeight: column.implicitHeight
+  clip: true
+  boundsBehavior: Flickable.StopAtBounds
+  flickableDirection: Flickable.VerticalFlick
+  interactive: contentHeight > height
+  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
   function open(target) {
     session++
+    contentY = 0
     openingKey = ""
     job = target
     shownKey = ""
@@ -376,7 +384,13 @@ Item {
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
         function keepCurrentVisible() {
-          if (currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Contain)
+          if (currentIndex < 0) return
+          positionViewAtIndex(currentIndex, ListView.Contain)
+          if (!currentItem) return
+          var top = currentItem.mapToItem(root.contentItem, 0, 0).y
+          if (top < root.contentY) root.contentY = top
+          else if (top + currentItem.height > root.contentY + root.height)
+            root.contentY = Math.min(root.contentHeight - root.height, top + currentItem.height - root.height)
         }
 
         delegate: CursorSurface {
@@ -559,6 +573,7 @@ Item {
         }
 
         Button {
+          objectName: "dismissRestoreButton"
           text: "Dismiss"
           foreground: root.foreground
           fontFamily: root.fontFamily
