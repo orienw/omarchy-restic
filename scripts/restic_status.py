@@ -1141,6 +1141,7 @@ def service_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
         unit,
         [
             "LoadState",
+            "Type",
             "ActiveState",
             "SubState",
             "Result",
@@ -1172,6 +1173,7 @@ def service_state(unit: str, runner: Runner, timeout: int) -> dict[str, Any]:
         "unit": unit,
         "available": True,
         "loadState": props.get("LoadState", "unknown"),
+        "type": props.get("Type", ""),
         "activeState": active_state,
         "subState": props.get("SubState", "unknown"),
         "result": props.get("Result", ""),
@@ -1266,11 +1268,12 @@ def parse_journal_lines(output: str) -> list[dict[str, Any]]:
 # Failure messages assume the journal holds every lifecycle entry systemd
 # wrote for the unit. Those come from the user manager, well inside journald's
 # rate limit; if some were lost, a message can name an earlier attempt's exit.
-def parse_journal_runs(output: str, subject: str = "Backup") -> list[dict[str, Any]]:
+def parse_journal_runs(output: str, subject: str = "Backup", service_type: str = "") -> list[dict[str, Any]]:
     invocations: dict[str, dict[str, Any]] = {}
     completions: dict[str, dict[str, Any]] = {}
     exits: dict[str, dict[str, Any]] = {}
     closed: set[str] = set()
+    open_starts: set[str] = set()
 
     for order, entry in enumerate(parse_journal_lines(output)):
         message_id = str(entry.get("MESSAGE_ID") or "")
@@ -1286,6 +1289,16 @@ def parse_journal_runs(output: str, subject: str = "Backup") -> list[dict[str, A
 
         if message_id == UNIT_STARTING:
             invocation["startedAt"] = timestamp
+            open_starts.add(invocation_id)
+            continue
+        # A oneshot's start job finishes after its commands exit. Other
+        # service types finish starting while the backup is still running.
+        if message_id == UNIT_STARTED and service_type != "oneshot":
+            invocation.setdefault("startedAt", timestamp)
+            continue
+        # Failed conditions also finish the start job successfully, without
+        # starting the service or assigning a new invocation.
+        if message_id == UNIT_STARTED and invocation_id not in open_starts:
             continue
 
         # A failing ExecStartPre logs the same message, but then the main
@@ -1313,6 +1326,7 @@ def parse_journal_runs(output: str, subject: str = "Backup") -> list[dict[str, A
             UNIT_FAILED,
             UNIT_FAILURE_RESULT,
         }:
+            open_starts.discard(invocation_id)
             successful = (
                 message_id in {UNIT_STARTED, UNIT_SUCCESS}
                 and entry.get("JOB_RESULT", "done") == "done"
@@ -1361,7 +1375,7 @@ LIFECYCLE_MATCHES = [
 
 
 def journal_runs(
-    unit: str, runner: Runner, timeout: int, scope: list[str], subject: str = "Backup"
+    unit: str, runner: Runner, timeout: int, scope: list[str], subject: str = "Backup", service_type: str = ""
 ) -> tuple[list[dict[str, Any]] | None, str]:
     command = [
         "journalctl",
@@ -1378,7 +1392,7 @@ def journal_runs(
         return None, sanitize(error)
     if result.returncode != 0:
         return None, sanitize(result.stderr or result.stdout)
-    return parse_journal_runs(result.stdout, subject), ""
+    return parse_journal_runs(result.stdout, subject, service_type), ""
 
 
 # This boot's own latest entry names the journal being written. The latest
@@ -1423,14 +1437,16 @@ def bare_run(run: dict[str, Any] | None) -> dict[str, Any] | None:
 # The current boot decides the latest run: within a boot the journal keeps a
 # unit's runs in order, while boots' clocks can disagree. Older boots are read
 # only when this boot has no run or no success yet.
-def journal_history(unit: str, runner: Runner, timeout: int, subject: str = "Backup") -> dict[str, Any]:
-    current, error = journal_runs(unit, runner, timeout, ["--boot=0", "--lines=80"], subject)
+def journal_history(
+    unit: str, runner: Runner, timeout: int, subject: str = "Backup", service_type: str = ""
+) -> dict[str, Any]:
+    current, error = journal_runs(unit, runner, timeout, ["--boot=0", "--lines=80"], subject, service_type)
     runs = current or []
     successful = [run for run in runs if run.get("result") == "success"]
     if not runs or not successful:
         # The whole history: a line limit could cut off the newest run when
         # journalctl lists another journal's entries after it.
-        earlier, earlier_error = journal_runs(unit, runner, timeout, [], subject)
+        earlier, earlier_error = journal_runs(unit, runner, timeout, [], subject, service_type)
         ordered = None if earlier is None else sequenced(earlier, active_journal(runner, timeout))
         if not runs and ordered is None:
             reason = error or earlier_error or "Run order across reboots is unclear"
@@ -1539,7 +1555,7 @@ def run_identity(run: dict[str, Any] | None) -> str | None:
 
 def collect_unit(unit: str, runner: Runner, timeout: int, subject: str = "Backup") -> dict[str, Any]:
     state = service_state(unit, runner, timeout)
-    history = journal_history(unit, runner, timeout, subject)
+    history = journal_history(unit, runner, timeout, subject, state.get("type", ""))
     last_run = later_run(history.get("lastRun"), fallback_run_from_systemd(state))
     last_success = history.get("lastSuccessAt")
     if last_run and last_run.get("result") == "success":

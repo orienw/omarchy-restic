@@ -69,10 +69,12 @@ class FakeRunner:
         no_history: bool = False,
         calendar: str = "daily UTC",
         exit_status: int = 0,
+        service_type: str = "oneshot",
     ):
         self.active = active
         self.failed = failed
         self.exit_status = exit_status
+        self.service_type = service_type
         self.restic_error = restic_error
         self.stats_error = stats_error
         self.systemd_unavailable = systemd_unavailable
@@ -141,6 +143,7 @@ class FakeRunner:
             exit_timestamp = " " if self.active else f"@{epoch(NOW - timedelta(hours=self.history_age_hours))}"
         output = "\n".join([
             "LoadState=loaded",
+            f"Type={self.service_type}",
             f"ActiveState={'active' if self.active else 'inactive'}",
             f"SubState={'running' if self.active else 'dead'}",
             f"Result={'exit-code' if self.failed else 'success'}",
@@ -320,13 +323,14 @@ class RollbackRunner(FakeRunner):
             return super()._systemctl(command, unit)
         if self.latest is None:
             return subprocess.CompletedProcess(command, 0, "\n".join([
-                "LoadState=loaded", "ActiveState=inactive", "SubState=dead", "Result=success",
+                "LoadState=loaded", "Type=oneshot", "ActiveState=inactive", "SubState=dead", "Result=success",
                 "ExecMainCode=0", "ExecMainStatus=0", "ExecMainStartTimestamp=", "ExecMainExitTimestamp=",
             ]), "")
         finished, result, _ = self.RUNS[self.latest]
         failed = result == "failed"
         return subprocess.CompletedProcess(command, 0, "\n".join([
             "LoadState=loaded",
+            "Type=oneshot",
             f"ActiveState={'failed' if failed else 'inactive'}",
             f"SubState={'failed' if failed else 'dead'}",
             f"Result={'exit-code' if failed else 'success'}",
@@ -892,6 +896,99 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(history["lastRun"]["message"], "Backup deactivated")
         self.assertEqual(history["lastRun"]["durationSec"], 180)
 
+    def test_started_service_without_completion_cannot_establish_success(self):
+        started = journal_entry(NOW - timedelta(hours=1), restic_status.UNIT_STARTED,
+                                "Started backup.", "interrupted")
+        for service_type in ("simple", "exec", ""):
+            with self.subTest(service_type=service_type):
+                runner = FakeRunner(no_history=True, service_type=service_type)
+                run = runner.run
+
+                def interrupted_history(command, *, timeout, env=None):
+                    if command[0] == "journalctl" and any(value.startswith("USER_UNIT=") for value in command):
+                        return subprocess.CompletedProcess(command, 0, "" if "--boot=0" in command else started, "")
+                    return run(command, timeout=timeout, env=env)
+
+                runner.run = interrupted_history
+                report = self.collect(runner)
+
+                self.assertEqual(report["overallStatus"], "unknown")
+                self.assertIsNone(report["jobs"][0]["service"]["lastSuccessAt"])
+                self.assertIsNone(report["jobs"][0]["service"]["lastRun"])
+
+    def test_oneshot_finished_history_survives_lost_runtime_state(self):
+        class CompletedAfterFailure(RollbackRunner):
+            RUNS = {
+                "run1": (NOW - timedelta(hours=2), "failed", 100),
+                "run2": (NOW - timedelta(hours=1), "success", 200),
+            }
+
+        for current_boot_runs in ((), ("run1", "run2")):
+            with self.subTest(current_boot_runs=current_boot_runs):
+                report = self.collect(CompletedAfterFailure(latest=None, current_boot_runs=current_boot_runs))
+                service = report["jobs"][0]["service"]
+
+                self.assertEqual(report["overallStatus"], "healthy")
+                self.assertIsNone(service["finishedAt"])
+                self.assertEqual(service["lastRun"]["invocationId"], "run2")
+                self.assertEqual(service["lastRun"]["durationSec"], 120)
+                self.assertEqual(service["lastSuccessAt"], restic_status.isoformat(NOW - timedelta(hours=1)))
+
+    def test_condition_skips_cannot_replace_completed_runs(self):
+        for previous in (None, "success", "failed"):
+            with self.subTest(previous=previous):
+                runner = FakeRunner(no_history=previous is None, failed=previous == "failed")
+                history = runner._history().stdout
+                skipped = journal_entry(
+                    NOW, restic_status.UNIT_STARTED,
+                    "Backup skipped, unmet condition check ConditionACPower=true.",
+                    "run-1" if previous else "", result="done", JOB_ID="2", JOB_TYPE="start",
+                )
+                runner._history = lambda: subprocess.CompletedProcess([], 0, history + skipped + "\n", "")
+
+                report = self.collect(runner)
+                service = report["jobs"][0]["service"]
+
+                self.assertEqual(report["overallStatus"], {
+                    None: "unknown", "success": "healthy", "failed": "attention",
+                }[previous])
+                self.assertEqual(service["lastSuccessAt"],
+                                 restic_status.isoformat(NOW - timedelta(hours=1)) if previous == "success" else None)
+                if previous:
+                    self.assertEqual(service["lastRun"]["result"], previous)
+                    self.assertEqual(service["lastRun"]["finishedAt"], restic_status.isoformat(NOW - timedelta(hours=1)))
+                else:
+                    self.assertIsNone(service["lastRun"])
+
+    def test_oneshot_history_recovers_start_outside_the_bounded_query(self):
+        runner = FakeRunner()
+        run = runner.run
+
+        def truncated_history(command, *, timeout, env=None):
+            result = run(command, timeout=timeout, env=env)
+            if command[0] == "journalctl" and "--boot=0" in command and "--lines=80" in command:
+                result.stdout = "\n".join(result.stdout.split("\n")[1:])
+            return result
+
+        runner.run = truncated_history
+        report = self.collect(runner)
+
+        self.assertEqual(report["overallStatus"], "healthy")
+        self.assertEqual(report["jobs"][0]["service"]["lastRun"]["durationSec"], 120)
+
+    def test_oneshot_completion_before_finished_job_is_preserved(self):
+        output = "\n".join([
+            journal_entry(NOW - timedelta(minutes=2), restic_status.UNIT_STARTING, "Starting backup."),
+            journal_entry(NOW, restic_status.UNIT_SUCCESS, "Deactivated successfully."),
+            journal_entry(NOW, restic_status.UNIT_STARTED, "Finished backup."),
+        ])
+
+        [run] = restic_status.parse_journal_runs(output, service_type="oneshot")
+
+        self.assertEqual(run["result"], "success")
+        self.assertEqual(run["finishedAt"], restic_status.isoformat(NOW))
+        self.assertEqual(run["durationSec"], 120)
+
     def test_newer_systemd_failure_overrides_older_journal_success(self):
         state = restic_status.service_state("restic-home.service", FakeRunner(failed=True), 30)
         state.update({"activeState": "failed", "finishedAt": restic_status.isoformat(NOW - timedelta(minutes=1))})
@@ -1451,7 +1548,7 @@ class ResticStatusTest(unittest.TestCase):
                 config["jobs"][0].update({"checkService": "restic-home-check.service", "checkTimer": timer})
                 self.config.write_text(json.dumps(config))
                 self.assertEqual(self.collect(FakeRunner())["overallStatus"], "healthy")
-                report = self.collect(UnavailableCheck())
+                report = self.collect(UnavailableCheck(duplicate_completion=True))
                 integrity = report["jobs"][0]["integrity"]
                 self.assertEqual(report["overallStatus"], "unknown")
                 self.assertEqual(integrity["status"], "unknown")
