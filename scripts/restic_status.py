@@ -1011,14 +1011,15 @@ def list_user_timers(runner: Runner, timeout: int) -> list[str]:
 
 def timer_services(timer: str, runner: Runner, timeout: int) -> list[str]:
     shown = systemd_show(timer, ["Triggers"], runner, timeout)
-    if shown["available"]:
-        services = [
-            unit
-            for unit in shown["properties"].get("Triggers", "").split()
-            if UNIT_PATTERN.fullmatch(unit) and unit.endswith(".service")
-        ]
-        if services:
-            return services
+    if not shown["available"]:
+        raise DiscoveryError(f"Could not inspect {timer}: {shown.get('error', '')}")
+    services = [
+        unit
+        for unit in shown["properties"].get("Triggers", "").split()
+        if UNIT_PATTERN.fullmatch(unit) and unit.endswith(".service")
+    ]
+    if services:
+        return services
     return [timer.removesuffix(".timer") + ".service"]
 
 
@@ -1103,21 +1104,26 @@ def discovered_job(
 
 def discover_jobs(runner: Runner, timeout: int) -> tuple[list[dict[str, Any]], list[str]]:
     jobs: list[dict[str, Any]] = []
-    failed_services: list[str] = []
+    failed_units: list[str] = []
     seen_services: set[str] = set()
     for timer in list_user_timers(runner, timeout):
-        for service in timer_services(timer, runner, timeout):
+        try:
+            services = timer_services(timer, runner, timeout)
+        except DiscoveryError:
+            failed_units.append(timer)
+            continue
+        for service in services:
             if service in seen_services:
                 continue
             seen_services.add(service)
             try:
                 job = discovered_job(service, timer, runner, timeout)
             except DiscoveryError:
-                failed_services.append(service)
+                failed_units.append(service)
                 continue
             if job:
                 jobs.append(job)
-    return jobs, failed_services
+    return jobs, failed_units
 
 
 def merge_jobs(
@@ -2311,17 +2317,19 @@ def collect_report(
     discovery_path = discovery_cache_file(cache_dir, config_path)
     discovery_error = ""
     try:
-        discovered_jobs, failed_services = discover_jobs(runner, timeout)
-        if failed_services:
+        discovered_jobs, failed_units = discover_jobs(runner, timeout)
+        if failed_units:
             cached_jobs = load_discovery_cache(discovery_path) or []
-            cached_by_service = {job["service"]: job for job in cached_jobs}
-            for service in failed_services:
-                cached = cached_by_service.get(service)
-                if cached:
+            discovered_services = {job["service"] for job in discovered_jobs}
+            for cached in cached_jobs:
+                if cached["service"] not in discovered_services and (
+                    cached["service"] in failed_units or cached["timer"] in failed_units
+                ):
                     discovered_jobs.append(cached)
+                    discovered_services.add(cached["service"])
             discovery_error = (
                 "Could not inspect "
-                + ", ".join(failed_services)
+                + ", ".join(failed_units)
                 + "; using cached discovery"
             )
         try:

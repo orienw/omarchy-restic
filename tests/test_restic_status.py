@@ -352,6 +352,8 @@ class DiscoveryRunner(FakeRunner):
         list_error: bool = False,
         empty_shows: bool = False,
         show_error: bool = False,
+        timer: str = "restic-documents.timer",
+        trigger_error: bool = False,
     ):
         super().__init__()
         self.script = script
@@ -359,6 +361,8 @@ class DiscoveryRunner(FakeRunner):
         self.list_error = list_error
         self.empty_shows = empty_shows
         self.show_error = show_error
+        self.timer = timer
+        self.trigger_error = trigger_error
 
     def run(self, command: list[str], *, timeout: int, env: dict[str, str] | None = None):
         if command[0] == "systemctl" and "list-unit-files" in command:
@@ -366,7 +370,7 @@ class DiscoveryRunner(FakeRunner):
             if self.list_error:
                 return subprocess.CompletedProcess(command, 1, "", "Failed to connect to user bus")
             output = "\n".join([
-                "restic-documents.timer enabled enabled",
+                f"{self.timer} enabled enabled",
                 "systemd-tmpfiles-clean.timer enabled enabled",
             ])
             return subprocess.CompletedProcess(command, 0, output, "")
@@ -383,9 +387,11 @@ class DiscoveryRunner(FakeRunner):
             }
             if properties == {"Triggers"}:
                 self.calls.append((command, env))
+                if self.trigger_error and unit == self.timer:
+                    return subprocess.CompletedProcess(command, 1, "", "Failed to get timer properties")
                 trigger = (
                     "restic-documents.service"
-                    if unit == "restic-documents.timer"
+                    if unit == self.timer
                     else "systemd-tmpfiles-clean.service"
                 )
                 return subprocess.CompletedProcess(command, 0, f"Triggers={trigger}\n", "")
@@ -680,6 +686,27 @@ class ResticStatusTest(unittest.TestCase):
         )
         self.assertEqual(recovered["jobs"][0]["id"], "restic-documents")
         self.assertEqual(recovered["jobs"][0]["source"], "systemd-cache")
+
+    def test_failed_custom_timer_lookup_reuses_its_cached_service(self):
+        config = self.root / "missing.json"
+        script = self.discovery_script()
+        self.collect(DiscoveryRunner(script, timer="nightly.timer"), config_path=config)
+
+        failed = self.collect(
+            DiscoveryRunner(script, timer="nightly.timer", trigger_error=True), config_path=config,
+        )
+
+        self.assertEqual(failed["config"]["status"], "degraded")
+        self.assertIn("nightly.timer", failed["config"]["error"])
+        self.assertEqual([job["id"] for job in failed["jobs"]], ["restic-documents"])
+        self.assertEqual(failed["jobs"][0]["source"], "systemd-cache")
+        self.assertEqual(failed["jobs"][0]["timer"]["unit"], "nightly.timer")
+        cached = restic_status.load_discovery_cache(restic_status.discovery_cache_file(self.cache, config))
+        self.assertEqual(cached[0]["service"], "restic-documents.service")
+
+        recovered = self.collect(DiscoveryRunner(script, timer="nightly.timer"), config_path=config)
+        self.assertEqual(recovered["config"]["status"], "discovered")
+        self.assertEqual(recovered["overallStatus"], "healthy")
 
     def test_discovery_requires_a_restic_backup_invocation(self):
         direct_backup = (
