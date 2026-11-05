@@ -66,6 +66,9 @@ ShellRoot {
       var expected = [
         ["~/custom jobs.json", 45, 420, "5"],
         ["~/updated jobs.json", 90, 660, "8"],
+        ["~/centerBegin.json", 60, 300, "6"],
+        ["~/centerEnd.json", 60, 300, "6"],
+        ["~/tray.json", 60, 300, "6"],
         ["~/legacy bar.json", 30, 240, "3"],
         ["~/legacy service.json", 75, 180, "2"]
       ][root.stage]
@@ -87,9 +90,18 @@ ShellRoot {
           id: "io.github.orienw.restic", jobsFile: "~/updated jobs.json",
           refreshIntervalSec: 90, repositoryRefreshMinutes: 11, logLines: 8
         }] } }
-      } else if (root.stage === 1) {
+      } else if (root.stage >= 1 && root.stage <= 3) {
+        // A widget in any section keeps its settings, including one the bar never loads.
+        var section = ["centerBegin", "centerEnd", "tray"][root.stage - 1]
+        var layout = {}
+        layout[section] = [{
+          id: "io.github.orienw.restic", jobsFile: "~/" + section + ".json",
+          refreshIntervalSec: 60, repositoryRefreshMinutes: 5, logLines: 6
+        }]
+        scopedShell.barConfig = { layout: layout }
+      } else if (root.stage === 4) {
         service.shell = legacyShell
-      } else if (root.stage === 2) {
+      } else if (root.stage === 5) {
         legacyShell.shellConfig = { plugins: legacyShell.shellConfig.plugins }
       } else {
         console.log("startup tests passed")
@@ -101,7 +113,7 @@ ShellRoot {
   }
 
   Timer {
-    interval: 5000
+    interval: 10000
     running: true
     repeat: false
     onTriggered: if (!root.finished) root.fail("collector never completed startup or settings refresh at stage " + root.stage)

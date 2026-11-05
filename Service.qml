@@ -81,7 +81,7 @@ Item {
     var config = shell && shell.shellConfig ? shell.shellConfig : null
     var barConfig = shell && shell.barConfig ? shell.barConfig : config && config.bar
     var layout = barConfig && barConfig.layout ? barConfig.layout : null
-    var sections = ["left", "center", "right"]
+    var sections = layout ? Object.keys(layout) : []
     for (var s = 0; s < sections.length; s++) {
       var widgets = layout && Array.isArray(layout[sections[s]]) ? layout[sections[s]] : []
       for (var w = 0; w < widgets.length; w++) {
