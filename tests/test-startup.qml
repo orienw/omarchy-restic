@@ -23,20 +23,6 @@ ShellRoot {
     })
   }
 
-  QtObject {
-    id: legacyShell
-    property var shellConfig: ({
-      bar: { layout: { left: [{
-        id: "io.github.orienw.restic", jobsFile: "~/legacy bar.json",
-        refreshIntervalSec: 30, repositoryRefreshMinutes: 4, logLines: 3
-      }] } },
-      plugins: [{
-        id: "io.github.orienw.restic", jobsFile: "~/legacy service.json",
-        refreshIntervalSec: 75, repositoryRefreshMinutes: 3, logLines: 2
-      }]
-    })
-  }
-
   Loader {
     id: serviceLoader
     source: "file://" + Quickshell.env("RESTIC_PLUGIN_DIR").split("/").map(encodeURIComponent).join("/") + "/Service.qml"
@@ -68,9 +54,7 @@ ShellRoot {
         ["~/updated jobs.json", 90, 660, "8"],
         ["~/centerBegin.json", 60, 300, "6"],
         ["~/centerEnd.json", 60, 300, "6"],
-        ["~/tray.json", 60, 300, "6"],
-        ["~/legacy bar.json", 30, 240, "3"],
-        ["~/legacy service.json", 75, 180, "2"]
+        ["~/tray.json", 60, 300, "6"]
       ][root.stage]
       var options = service.report.config.options
       if (options["--config"] !== expected[0]) return
@@ -90,7 +74,7 @@ ShellRoot {
           id: "io.github.orienw.restic", jobsFile: "~/updated jobs.json",
           refreshIntervalSec: 90, repositoryRefreshMinutes: 11, logLines: 8
         }] } }
-      } else if (root.stage >= 1 && root.stage <= 3) {
+      } else if (root.stage <= 3) {
         // A widget in any section keeps its settings, including one the bar never loads.
         var section = ["centerBegin", "centerEnd", "tray"][root.stage - 1]
         var layout = {}
@@ -99,10 +83,6 @@ ShellRoot {
           refreshIntervalSec: 60, repositoryRefreshMinutes: 5, logLines: 6
         }]
         scopedShell.barConfig = { layout: layout }
-      } else if (root.stage === 4) {
-        service.shell = legacyShell
-      } else if (root.stage === 5) {
-        legacyShell.shellConfig = { plugins: legacyShell.shellConfig.plugins }
       } else {
         console.log("startup tests passed")
         root.finished = true

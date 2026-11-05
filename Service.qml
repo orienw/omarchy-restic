@@ -78,20 +78,13 @@ Item {
   }
 
   function findSettings() {
-    var config = shell && shell.shellConfig ? shell.shellConfig : null
-    var barConfig = shell && shell.barConfig ? shell.barConfig : config && config.bar
-    var layout = barConfig && barConfig.layout ? barConfig.layout : null
+    var layout = shell && shell.barConfig ? shell.barConfig.layout : null
     var sections = layout ? Object.keys(layout) : []
     for (var s = 0; s < sections.length; s++) {
       var widgets = layout && Array.isArray(layout[sections[s]]) ? layout[sections[s]] : []
       for (var w = 0; w < widgets.length; w++) {
         if (widgets[w] && String(widgets[w].id || "") === pluginId) return widgets[w]
       }
-    }
-
-    var plugins = config && Array.isArray(config.plugins) ? config.plugins : []
-    for (var p = 0; p < plugins.length; p++) {
-      if (plugins[p] && String(plugins[p].id || "") === pluginId) return plugins[p]
     }
     return ({})
   }
