@@ -146,7 +146,7 @@ Panel {
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(420))
     contentHeight: panel.fittedContentHeight(
-      root.browsingJob ? browser.implicitHeight : content.implicitHeight, Style.space(620))
+      root.browsingJob ? browser.implicitHeight : panelContent.implicitHeight, Style.space(620))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -192,7 +192,7 @@ Panel {
         anchors.fill: parent
         visible: !root.browsingJob
         contentWidth: width
-        contentHeight: content.implicitHeight
+        contentHeight: panelContent.implicitHeight
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
@@ -200,7 +200,7 @@ Panel {
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
         Column {
-          id: content
+          id: panelContent
           width: parent.width
           spacing: Style.space(12)
 
@@ -327,7 +327,7 @@ Panel {
                 root.rememberDetails(job.id, detailsExpanded)
               }
 
-              width: content.width
+              width: panelContent.width
               implicitHeight: jobContent.implicitHeight + Style.space(20)
               bordered: true
               hasCursor: index === root.cursorIndex
