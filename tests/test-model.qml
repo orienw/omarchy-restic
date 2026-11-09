@@ -149,6 +149,25 @@ ShellRoot {
         root.fail("real report while refreshing should keep job counts")
         return
       }
+      var reportWording = [
+        ["attention", 1, "1 job needs attention"],
+        ["attention", 2, "2 jobs need attention"],
+        ["running", 1, "1 job running"],
+        ["running", 2, "2 jobs running"],
+        ["healthy", 1, "1 job checked"],
+        ["healthy", 2, "2 jobs checked"]
+      ]
+      for (var w = 0; w < reportWording.length; w++) {
+        var wording = reportWording[w]
+        var meta = Model.reportMeta({
+          generatedAt: "2026-08-17T12:00:00Z", overallStatus: wording[0],
+          summary: { jobs: wording[1], attention: wording[1], running: wording[1] }
+        }, false)
+        if (meta !== wording[2]) {
+          root.fail("report wording did not agree with the job count: " + meta)
+          return
+        }
+      }
       var backupJobs = [
         { id: "home", status: "healthy", service: { unit: "restic-home.service", active: false } },
         { id: "busy", status: "running", service: { unit: "restic-busy.service", active: true } },

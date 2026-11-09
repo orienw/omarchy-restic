@@ -172,7 +172,8 @@ function reportMeta(report, refreshing) {
   var jobs = Number(report.summary.jobs || 0)
   if (jobs === 0) return "No Restic jobs found"
   if (report.overallStatus === "attention")
-    return count(report.summary.attention, "job", "jobs") + " need attention"
+    return count(report.summary.attention, "job", "jobs")
+      + (Number(report.summary.attention) === 1 ? " needs attention" : " need attention")
   if (report.overallStatus === "running")
     return count(report.summary.running, "job", "jobs") + " running"
   if (report.overallStatus === "healthy")
