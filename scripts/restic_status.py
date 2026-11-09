@@ -549,10 +549,14 @@ def normalize_job(raw: Any, index: int) -> dict[str, Any]:
     repository = optional_string(raw, "repository", context)
     if not repository_file and not repository:
         raise ConfigError(f"{context} must set repositoryFile or repository")
+    if repository_file and repository:
+        raise ConfigError(f"{context} must set only one of repositoryFile and repository")
     password_file = optional_string(raw, "passwordFile", context)
     password_command = optional_string(raw, "passwordCommand", context)
     if not password_file and not password_command:
         raise ConfigError(f"{context} must set passwordFile or passwordCommand")
+    if password_file and password_command:
+        raise ConfigError(f"{context} must set only one of passwordFile and passwordCommand")
 
     return {
         "id": job_id,

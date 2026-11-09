@@ -1765,6 +1765,19 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(report["config"]["status"], "error")
         self.assertIn("passwordFile or passwordCommand", report["config"]["error"])
 
+    def test_configured_job_with_a_file_and_its_alternative_is_a_config_error(self):
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        config["jobs"][0]["repository"] = "rclone:remote:Backups/laptop"
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+        with self.assertRaisesRegex(restic_status.ConfigError, "only one of repositoryFile and repository"):
+            restic_status.load_config(self.config)
+
+        del config["jobs"][0]["repository"]
+        config["jobs"][0]["passwordCommand"] = "secret-tool lookup service restic"
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+        with self.assertRaisesRegex(restic_status.ConfigError, "only one of passwordFile and passwordCommand"):
+            restic_status.load_config(self.config)
+
     def test_non_numeric_max_run_age_is_a_config_error(self):
         config = json.loads(self.config.read_text(encoding="utf-8"))
         config["jobs"][0]["maxRunAgeHours"] = "thirty"
