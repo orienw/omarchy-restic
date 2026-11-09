@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -784,6 +785,18 @@ class ResticStatusTest(unittest.TestCase):
         self.collect(DiscoveryRunner(runner.script), config_path=config)
 
         self.assertEqual(cache.stat().st_ino, inode)
+
+    def test_cache_key_is_unchanged_for_file_based_jobs(self):
+        job = {
+            "repositoryFile": "/repo", "repository": "", "passwordFile": "/password",
+            "passwordCommand": "", "restic": "restic", "tag": "",
+        }
+        before = hashlib.sha256(json.dumps({
+            "repositoryFile": "/repo", "passwordFile": "/password", "restic": "restic", "tag": "",
+        }, sort_keys=True).encode()).hexdigest()
+
+        self.assertEqual(restic_status.cache_key(job), before)
+        self.assertNotEqual(restic_status.cache_key({**job, "passwordCommand": "pass"}), before)
 
     def test_discovery_cache_without_credential_alternatives_is_ignored(self):
         config = self.root / "missing.json"

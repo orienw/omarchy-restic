@@ -1864,12 +1864,15 @@ def normalized_stats(raw: Any) -> dict[str, Any]:
 def cache_key(job: dict[str, Any]) -> str:
     relevant = {
         "repositoryFile": job["repositoryFile"],
-        "repository": job.get("repository", ""),
         "passwordFile": job["passwordFile"],
-        "passwordCommand": job.get("passwordCommand", ""),
         "restic": job["restic"],
         "tag": job["tag"],
     }
+    # Only present when set, so file-based jobs keep the key they had before
+    # repository locations and password commands existed.
+    for key in ("repository", "passwordCommand"):
+        if job.get(key):
+            relevant[key] = job[key]
     return hashlib.sha256(json.dumps(relevant, sort_keys=True).encode()).hexdigest()
 
 
