@@ -254,6 +254,29 @@ class ResticBrowseTest(unittest.TestCase):
         )
         self.assertEqual(restic_browse.list_directory(["restic"], SNAPSHOT, "/", missing, 30)[2], "dir")
 
+    def test_directory_listing_accepts_current_and_legacy_node_markers(self):
+        for markers in ({"message_type": "node"}, {"struct_type": "node"},
+                        {"message_type": "node", "struct_type": "node"}):
+            with self.subTest(markers=markers):
+                records = [
+                    {**markers, "path": "/home/test", "type": "dir"},
+                    {**markers, "path": "/home/test/zeta.txt", "type": "file"},
+                    {**markers, "path": "/home/test/Empty", "type": "dir"},
+                    {**markers, "path": "/home/test/nested/child", "type": "file"},
+                    {"message_type": "snapshot", "struct_type": "snapshot", "path": "/home/test/ignored"},
+                ]
+                runner = ListRunner("\n".join(json.dumps(record) for record in records))
+                entries, truncated, kind = restic_browse.list_directory(["restic"], SNAPSHOT, "/home/test", runner, 30)
+                self.assertEqual([entry["name"] for entry in entries], ["Empty", "zeta.txt"])
+                self.assertFalse(truncated)
+                self.assertEqual(kind, "dir")
+                empty = ListRunner(json.dumps(records[2]))
+                self.assertEqual(restic_browse.list_directory(["restic"], SNAPSHOT, "/home/test/Empty", empty, 30),
+                                 ([], False, "dir"))
+                single = ListRunner(json.dumps(records[1]))
+                self.assertEqual(restic_browse.list_directory(["restic"], SNAPSHOT, "/home/test/zeta.txt", single, 30),
+                                 ([], False, "file"))
+
     def test_snapshots_are_newest_first_and_filtered_by_tag(self):
         runner = ListRunner(json.dumps([
             {"id": "a" * 64, "time": "2026-08-01T03:30:00Z", "hostname": "forge", "paths": ["/home/test"]},

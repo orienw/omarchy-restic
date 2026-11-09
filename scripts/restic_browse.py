@@ -144,7 +144,7 @@ def list_directory(
             node = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if not isinstance(node, dict) or node.get("struct_type") != "node":
+        if not isinstance(node, dict) or (node.get("message_type") != "node" and node.get("struct_type") != "node"):
             continue
         node_path = str(node.get("path") or "")
         if node_path == path:
