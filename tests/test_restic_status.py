@@ -30,7 +30,7 @@ def epoch(value: datetime) -> float:
 def journal_entry(
     timestamp: datetime,
     message_id: str | None,
-    message: str,
+    message: str | list,
     invocation: str = "run-1",
     result: str | None = None,
     seqnum: int | None = None,
@@ -1277,6 +1277,26 @@ class ResticStatusTest(unittest.TestCase):
             report["jobs"][0]["timer"]["nextRunAt"],
             restic_status.isoformat(NOW + timedelta(seconds=20)),
         )
+
+    def test_journal_byte_messages_are_decoded_for_logs_and_runs(self):
+        binary = b"\x1b[2Krestic: caf\xc3\xa9 \xff\x00\x7f password=secret\r\nretry failed"
+        cases = [
+            ("Backup failed", "Backup failed"),
+            (list(binary), "[2Krestic: café \ufffd password=[redacted] retry failed"),
+            (binary.decode("utf-8", errors="replace"), "[2Krestic: café \ufffd password=[redacted] retry failed"),
+            (["first", "second"], "first second"),
+            ([list(b"\x1b[2Kfirst"), "second"], "[2Kfirst second"),
+        ]
+        for message, expected in cases:
+            with self.subTest(message=message):
+                output = journal_entry(NOW, restic_status.UNIT_FAILED, message, result="failed")
+                runner = FakeRunner()
+                with patch.object(runner, "run", return_value=subprocess.CompletedProcess([], 0, output, "")):
+                    tail = restic_status.journal_tail("backup.service", 10, runner, 30)
+                runs = restic_status.parse_journal_runs(output)
+                self.assertEqual(tail, [expected])
+                self.assertEqual(runs[0]["message"], expected)
+                self.assertTrue(all(character.isprintable() for character in tail[0]))
 
     def test_duplicate_completion_events_are_one_logical_run(self):
         runner = FakeRunner(duplicate_completion=True)

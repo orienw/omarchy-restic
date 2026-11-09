@@ -1451,6 +1451,18 @@ def parse_journal_lines(output: str) -> list[dict[str, Any]]:
     return entries
 
 
+# journald writes a message holding non-printable bytes as an array of byte
+# values, and a field set more than once as an array of its values.
+def journal_message(value: Any, limit: int = 360) -> str:
+    if isinstance(value, list):
+        try:
+            value = bytes(value).decode("utf-8", errors="replace")
+        except (TypeError, ValueError):
+            value = " ".join(journal_message(item, limit) for item in value)
+    text = "".join(character for character in str(value or "") if character.isprintable() or character.isspace())
+    return sanitize(text, limit)
+
+
 # Runs keep the journal's order rather than their wall-clock times, so a
 # clock stepped backwards cannot make a newer run look older. Within one
 # boot the journal records a unit's runs in the order systemd reported them.
@@ -1538,7 +1550,7 @@ def parse_journal_runs(output: str, subject: str = "Backup", service_type: str =
                 {
                     "finishedAt": timestamp,
                     "result": "success" if successful else "failed",
-                    "message": message or sanitize(entry.get("MESSAGE")),
+                    "message": message or journal_message(entry.get("MESSAGE")),
                 }
             )
             invocation["durationSec"] = elapsed_seconds(
@@ -1778,7 +1790,7 @@ def journal_tail(unit: str, lines: int, runner: Runner, timeout: int) -> list[st
         return []
     if result.returncode != 0:
         return []
-    messages = [sanitize(entry.get("MESSAGE"), 240) for entry in parse_journal_lines(result.stdout)]
+    messages = [journal_message(entry.get("MESSAGE"), 240) for entry in parse_journal_lines(result.stdout)]
     return [message for message in messages if message][-lines:]
 
 
