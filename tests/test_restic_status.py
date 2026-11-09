@@ -93,7 +93,7 @@ class FakeRunner:
         if command[0] == "systemd-analyze":
             return subprocess.run(command, timeout=timeout, env=env, text=True, capture_output=True)
         if command[0] == "systemctl":
-            if "list-unit-files" in command:
+            if "list-unit-files" in command or "list-units" in command:
                 return subprocess.CompletedProcess(command, 0, "", "")
             unit = command[command.index("show") + 1]
             return self._systemctl(command, unit)
@@ -522,6 +522,80 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(report["jobs"][0]["repository"]["snapshotCount"], 2)
         snapshot_call = next(call for call in runner.calls if "snapshots" in call[0])
         self.assertIn("--tag=documents", snapshot_call[0])
+
+    def test_timer_lists_merge_files_and_loaded_instances(self):
+        runner = FakeRunner()
+        listings = [
+            "backup@.timer disabled enabled\nbackup.timer enabled enabled\n",
+            "backup@home.timer loaded active waiting Home backup\n"
+            "backup.timer loaded active waiting Backup\n"
+            "failed.timer loaded failed failed Failed timer\n"
+            "missing.timer not-found inactive dead Missing timer\n",
+        ]
+        with patch.object(runner, "run", side_effect=[
+            subprocess.CompletedProcess([], 0, output, "") for output in listings
+        ]) as run:
+            timers = restic_status.list_user_timers(runner, 30)
+        self.assertEqual(timers, ["backup.timer", "backup@home.timer", "failed.timer", "missing.timer"])
+        self.assertEqual(run.call_args_list[1].args[0], [
+            "systemctl", "--user", "list-units", "--all", "--plain", "--type=timer", "--no-legend", "--no-pager",
+        ])
+
+    def test_template_timer_discovers_loaded_instance(self):
+        script = self.discovery_script()
+
+        class InstanceRunner(FakeRunner):
+            def run(self, command, *, timeout, env=None):
+                if command[0] == "systemctl":
+                    output = None
+                    if "list-unit-files" in command:
+                        output = "restic-backup@.timer disabled enabled\n"
+                    elif "list-units" in command:
+                        output = "restic-backup@home.timer loaded active waiting Home backup\n"
+                    elif "Triggers" in command:
+                        output = "Triggers=restic-backup@home.service\n"
+                    elif "Description" in command:
+                        output = f"ExecStart={{ path={script} ; argv[]={script} ; ignore_errors=no ; }}\n"
+                    if output is not None:
+                        self.calls.append((command, env))
+                        return subprocess.CompletedProcess(command, 0, output, "")
+                return super().run(command, timeout=timeout, env=env)
+
+        runner = InstanceRunner()
+        report = self.collect(runner, config_path=self.root / "missing.json")
+        self.assertEqual(report["config"]["status"], "discovered")
+        self.assertEqual(report["overallStatus"], "healthy")
+        self.assertEqual(len(report["jobs"]), 1)
+        self.assertEqual(report["jobs"][0]["service"]["unit"], "restic-backup@home.service")
+        self.assertEqual(report["jobs"][0]["timer"]["unit"], "restic-backup@home.timer")
+        self.assertFalse(any("restic-backup@.timer" in command for command, _ in runner.calls))
+
+    def test_either_timer_listing_failure_reuses_cached_discovery(self):
+        config = self.root / "missing.json"
+        script = self.discovery_script()
+        self.collect(DiscoveryRunner(script), config_path=config)
+        for listing in ("list-unit-files", "list-units"):
+            for failure in ("exit", "timeout", "os-error"):
+                with self.subTest(listing=listing, failure=failure):
+                    runner = DiscoveryRunner(script)
+                    run = runner.run
+
+                    def fail_listing(command, *, timeout, env=None):
+                        if listing in command:
+                            if failure == "timeout":
+                                raise subprocess.TimeoutExpired(command, timeout)
+                            if failure == "os-error":
+                                raise OSError("systemctl unavailable")
+                            return subprocess.CompletedProcess(command, 1, "", "Failed to connect to user bus")
+                        return run(command, timeout=timeout, env=env)
+
+                    runner.run = fail_listing
+                    report = self.collect(runner, config_path=config)
+                    self.assertEqual(report["config"]["status"], "degraded")
+                    self.assertEqual(report["overallStatus"], "unknown")
+                    self.assertIn("Could not list user timers", report["config"]["error"])
+                    self.assertEqual([job["id"] for job in report["jobs"]], ["restic-documents"])
+                    self.assertEqual(report["jobs"][0]["source"], "systemd-cache")
 
     def test_configured_jobs_merge_with_unmentioned_discovered_jobs(self):
         report = self.collect(DiscoveryRunner(self.discovery_script()))

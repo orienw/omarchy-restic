@@ -31,6 +31,7 @@ The plugin never changes your repository or backup configuration. For status it 
 
 - `systemctl --user show`
 - `systemctl --user list-unit-files`
+- `systemctl --user list-units`
 - `journalctl --user`
 - `systemd-analyze calendar`
 - `restic snapshots --json`
@@ -64,7 +65,7 @@ Install and enable the plugin:
 omarchy plugin add https://github.com/orienw/omarchy-restic.git --enable
 ```
 
-The plugin discovers restic jobs automatically. It lists user systemd timers, resolves each triggered service, and inspects static service metadata or a readable local wrapper script. Discovery recognizes `restic backup` jobs and extracts:
+The plugin discovers restic jobs automatically. It lists user systemd timers, including loaded instances of template timers, resolves each triggered service, and inspects static service metadata or a readable local wrapper script. Discovery recognizes `restic backup` jobs and extracts:
 
 - The service and timer names
 - `RESTIC_REPOSITORY_FILE`, or `RESTIC_REPOSITORY` / `--repo`

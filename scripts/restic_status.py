@@ -1126,31 +1126,33 @@ def systemd_show(
 
 
 def list_user_timers(runner: Runner, timeout: int) -> list[str]:
-    command = [
-        "systemctl",
-        "--user",
-        "list-unit-files",
-        "--type=timer",
-        "--no-legend",
-        "--no-pager",
-    ]
-    try:
-        result = runner.run(command, timeout=timeout)
-    except subprocess.TimeoutExpired as error:
-        raise DiscoveryError("Could not list user timers: the systemd user manager did not respond in time") from error
-    except OSError as error:
-        raise DiscoveryError(f"Could not list user timers: {sanitize(error)}") from error
-    if result.returncode != 0:
-        raise DiscoveryError(
-            "Could not list user timers: " + sanitize(result.stderr or result.stdout)
-        )
-    return sorted(
-        {
+    timers: set[str] = set()
+    for arguments in (["list-unit-files"], ["list-units", "--all", "--plain"]):
+        command = [
+            "systemctl",
+            "--user",
+            *arguments,
+            "--type=timer",
+            "--no-legend",
+            "--no-pager",
+        ]
+        try:
+            result = runner.run(command, timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            raise DiscoveryError("Could not list user timers: the systemd user manager did not respond in time") from error
+        except OSError as error:
+            raise DiscoveryError(f"Could not list user timers: {sanitize(error)}") from error
+        if result.returncode != 0:
+            raise DiscoveryError(
+                "Could not list user timers: " + sanitize(result.stderr or result.stdout)
+            )
+        timers.update(
             line.split()[0]
             for line in result.stdout.split("\n")
             if line.split() and UNIT_PATTERN.fullmatch(line.split()[0]) and line.split()[0].endswith(".timer")
-        }
-    )
+            and not line.split()[0].endswith("@.timer")
+        )
+    return sorted(timers)
 
 
 def timer_services(timer: str, runner: Runner, timeout: int) -> list[str]:
