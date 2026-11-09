@@ -1148,7 +1148,7 @@ def timer_services(timer: str, runner: Runner, timeout: int) -> list[str]:
 def discovered_source(
     tokens: list[str],
     variables: dict[str, str],
-    file_flag: str,
+    file_flags: list[str],
     other_flags: list[str],
     file_variable: str,
     other_variable: str,
@@ -1156,7 +1156,7 @@ def discovered_source(
     # Flags on the restic command beat the unit's environment, which also
     # carries the session's own RESTIC_* variables. Within each, the file
     # wins over its alternative.
-    file = flag_value(tokens, file_flag, variables) or ""
+    file = next((value for flag in file_flags if (value := flag_value(tokens, flag, variables))), "")
     other = "" if file else next(
         (value for flag in other_flags if (value := flag_value(tokens, flag, variables))), ""
     )
@@ -1202,11 +1202,11 @@ def discovered_job(
     parse_assignments(script_text, variables)
 
     repository, repository_location = discovered_source(
-        backup_tokens, variables, "--repository-file", ["--repo", "-r"],
+        backup_tokens, variables, ["--repository-file"], ["--repo", "-r"],
         "RESTIC_REPOSITORY_FILE", "RESTIC_REPOSITORY",
     )
     password, password_command = discovered_source(
-        backup_tokens, variables, "--password-file", ["--password-command"],
+        backup_tokens, variables, ["--password-file", "-p"], ["--password-command"],
         "RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND",
     )
     tag = flag_value(backup_tokens, "--tag", variables) or ""

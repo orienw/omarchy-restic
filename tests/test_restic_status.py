@@ -705,6 +705,20 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(job["passwordFile"], "")
         self.assertEqual(job["passwordCommand"], "service-secret")
 
+    def test_discovery_reads_the_password_file_shorthand(self):
+        properties = restic_status.parse_properties(
+            f"ExecStart={{ path=/usr/bin/restic ; argv[]=/usr/bin/restic -r /srv/repo -p {self.password}"
+            " backup /home ; ignore_errors=no ; }"
+        )
+        with patch.dict(os.environ, {"RESTIC_PASSWORD_FILE": "/srv/session-password"}), patch.object(
+            restic_status, "systemd_show", return_value={"available": True, "properties": properties}
+        ):
+            job = restic_status.discovered_job("backup.service", "backup.timer", FakeRunner(), 5)
+
+        self.assertEqual(job["repository"], "/srv/repo")
+        self.assertEqual(job["passwordFile"], str(self.password))
+        self.assertEqual(job["passwordCommand"], "")
+
     def test_discovery_prefers_files_over_repository_url_and_password_command(self):
         environment = self.root / "restic.env"
         environment.write_text(
