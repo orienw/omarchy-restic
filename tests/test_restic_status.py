@@ -616,13 +616,13 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(job["discoveryError"], "")
         self.assertEqual(job["repositoryFile"], "")
         self.assertEqual(job["passwordFile"], "")
-        self.assertEqual(
-            restic_status.restic_command(job, "/usr/bin/restic", self.root)[4:],
-            [
-                "--repo", "rclone:remote:Backups/laptop",
-                "--password-command", "secret-tool lookup service restic repo laptop",
-            ],
-        )
+        command = restic_status.restic_command(job, "/usr/bin/restic", self.root)
+        self.assertEqual(command, ["/usr/bin/restic", "--json", "--cache-dir", str(self.root)])
+        with patch.dict(os.environ, {"RESTIC_REPOSITORY": "/elsewhere", "RESTIC_PASSWORD": "leaked"}):
+            env = restic_status.restic_environment(job)
+        self.assertEqual(env["RESTIC_REPOSITORY"], "rclone:remote:Backups/laptop")
+        self.assertEqual(env["RESTIC_PASSWORD_COMMAND"], "secret-tool lookup service restic repo laptop")
+        self.assertNotIn("RESTIC_PASSWORD", env)
 
     def test_discovery_prefers_files_over_repository_url_and_password_command(self):
         environment = self.root / "restic.env"
@@ -641,6 +641,9 @@ class ResticStatusTest(unittest.TestCase):
             restic_status.restic_command(job, "/usr/bin/restic", self.root)[4:],
             ["--repository-file", str(self.repository), "--password-file", str(self.password)],
         )
+        env = restic_status.restic_environment(job)
+        self.assertNotIn("RESTIC_REPOSITORY", env)
+        self.assertNotIn("RESTIC_PASSWORD_COMMAND", env)
 
     def test_discovery_reads_repo_and_password_command_flags(self):
         properties = restic_status.parse_properties(
@@ -709,6 +712,18 @@ class ResticStatusTest(unittest.TestCase):
         self.collect(DiscoveryRunner(runner.script), config_path=config)
 
         self.assertEqual(cache.stat().st_ino, inode)
+
+    def test_discovery_cache_without_credential_alternatives_is_ignored(self):
+        config = self.root / "missing.json"
+        self.collect(DiscoveryRunner(self.discovery_script()), config_path=config)
+        cache = restic_status.discovery_cache_file(self.cache, config)
+        payload = json.loads(cache.read_text(encoding="utf-8"))
+        for job in payload["jobs"]:
+            del job["repository"], job["passwordCommand"]
+        payload["schemaVersion"] = 1
+        cache.write_text(json.dumps(payload), encoding="utf-8")
+
+        self.assertIsNone(restic_status.load_discovery_cache(cache))
 
     def test_empty_discovery_preserves_nonempty_cache_without_merging_it(self):
         config = self.root / "missing.json"

@@ -414,6 +414,41 @@ class ResticRoundTripTest(unittest.TestCase):
             self.assertEqual(listing["kind"], "file")
             self.assertFalse(listing["exists"])
 
+    def test_repository_location_and_password_command_browse_and_restore(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "notes.md").write_text("keep me")
+            (root / "password").write_text("secret")
+            config = root / "jobs.json"
+            config.write_text(json.dumps({"schemaVersion": 1, "jobs": [{
+                "id": "one", "name": "One", "service": "one.service", "timer": "one.timer",
+                "repository": str(root / "repo"),
+                "passwordCommand": f"cat {root / 'password'}",
+            }]}))
+            restic = ["restic", "-q", "--repo", str(root / "repo"),
+                      "--password-file", str(root / "password"), "--cache-dir", str(root / "restic-cache")]
+            subprocess.run(restic + ["init"], check=True, capture_output=True)
+            subprocess.run(restic + ["backup", str(root / "notes.md")], check=True, capture_output=True)
+
+            def browse(*args: str) -> dict:
+                output = subprocess.run(
+                    [sys.executable, str(PROJECT_DIR / "scripts" / "restic_browse.py"), *args,
+                     "--config", str(config), "--cache-dir", str(root / "cache"), "--job", "one"],
+                    capture_output=True, text=True, timeout=60, check=True,
+                )
+                return json.loads(output.stdout.splitlines()[-1])
+
+            snapshot = browse("snapshots")["snapshots"][0]
+            listing = browse("ls", "--snapshot", snapshot["id"], "--path", str(root / "notes.md"))
+            self.assertEqual(listing["kind"], "file")
+            result = browse(
+                "restore", "--snapshot", snapshot["id"], "--snapshot-time", snapshot["time"],
+                "--path", str(root / "notes.md"), "--type", "file",
+                "--target-root", str(root / "Restored"),
+            )
+            self.assertEqual(result["type"], "done", result)
+            self.assertEqual(Path(result["path"]).read_text(), "keep me")
+
     def test_names_restic_cannot_show_exactly_are_never_restored(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

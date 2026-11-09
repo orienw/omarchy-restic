@@ -24,7 +24,7 @@ from typing import IO, Any, Callable
 
 REPORT_SCHEMA_VERSION = 1
 CONFIG_SCHEMA_VERSION = 1
-DISCOVERY_CACHE_SCHEMA_VERSION = 1
+DISCOVERY_CACHE_SCHEMA_VERSION = 2
 
 UNIT_STARTING = "7d4958e842da4a758f6c1cdc7b36dcc5"
 UNIT_STARTED = "39f53479d3a045ac8e11786248231fbf"
@@ -1645,7 +1645,7 @@ def resolve_restic(command: str) -> str | None:
     return shutil.which(command)
 
 
-def restic_environment() -> dict[str, str]:
+def restic_environment(job: dict[str, Any] | None = None) -> dict[str, str]:
     env = os.environ.copy()
     for key in (
         "RESTIC_REPOSITORY",
@@ -1656,6 +1656,12 @@ def restic_environment() -> dict[str, str]:
     ):
         env.pop(key, None)
     env["LC_ALL"] = "C"
+    # A repository location can embed credentials, so it goes through the
+    # environment rather than the command line other users can read.
+    if job and not job.get("repositoryFile") and job.get("repository"):
+        env["RESTIC_REPOSITORY"] = job["repository"]
+    if job and not job.get("passwordFile") and job.get("passwordCommand"):
+        env["RESTIC_PASSWORD_COMMAND"] = job["passwordCommand"]
     return env
 
 
@@ -1663,12 +1669,8 @@ def restic_command(job: dict[str, Any], restic: str, cache_dir: Path) -> list[st
     command = [restic, "--json", "--cache-dir", str(cache_dir)]
     if job["repositoryFile"]:
         command += ["--repository-file", job["repositoryFile"]]
-    else:
-        command += ["--repo", job.get("repository", "")]
     if job["passwordFile"]:
         command += ["--password-file", job["passwordFile"]]
-    else:
-        command += ["--password-command", job.get("passwordCommand", "")]
     return command
 
 
@@ -1819,8 +1821,8 @@ def read_discovery_cache(path: Path) -> dict[str, Any] | None:
         return None
 
     required = {
-        "id", "name", "service", "timer", "repositoryFile", "passwordFile",
-        "restic", "tag", "maxRunAgeHours", "checkService", "checkTimer",
+        "id", "name", "service", "timer", "repositoryFile", "repository",
+        "passwordFile", "passwordCommand", "restic", "tag", "maxRunAgeHours", "checkService", "checkTimer",
         "checkMaxAgeHours", "discoveryError",
     }
     if any(
@@ -2016,7 +2018,7 @@ def collect_repository(
     if job["tag"]:
         snapshot_command.append("--tag=" + job["tag"])
     try:
-        snapshots_result = runner.run(snapshot_command, timeout=timeout, env=restic_environment())
+        snapshots_result = runner.run(snapshot_command, timeout=timeout, env=restic_environment(job))
     except (OSError, subprocess.TimeoutExpired) as error:
         return failure("unavailable", sanitize(error))
 
@@ -2045,7 +2047,7 @@ def collect_repository(
     stats: dict[str, Any] = {}
     partial_error = ""
     try:
-        stats_result = runner.run(stats_command, timeout=timeout, env=restic_environment())
+        stats_result = runner.run(stats_command, timeout=timeout, env=restic_environment(job))
         if stats_result.returncode == 0:
             raw_stats = json.loads(stats_result.stdout)
             if isinstance(raw_stats, dict):

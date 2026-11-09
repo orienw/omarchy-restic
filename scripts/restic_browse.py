@@ -77,9 +77,13 @@ def restic_error(returncode: int, output: str) -> str:
     return status.sanitize(output) or f"Restic exited with status {returncode}"
 
 
-def run_restic(runner: status.Runner, command: list[str], timeout: int) -> str:
+def run_restic(
+    runner: status.Runner, command: list[str], timeout: int, env: dict[str, str] | None = None
+) -> str:
     try:
-        result = runner.run(command, timeout=timeout, env=status.restic_environment())
+        result = runner.run(
+            command, timeout=timeout, env=env if env is not None else status.restic_environment()
+        )
     except subprocess.TimeoutExpired as error:
         raise BrowseError("The repository did not respond in time") from error
     except OSError as error:
@@ -119,7 +123,7 @@ def list_snapshots(
     if job["tag"]:
         command.append("--tag=" + job["tag"])
     try:
-        raw = json.loads(run_restic(runner, command, timeout))
+        raw = json.loads(run_restic(runner, command, timeout, status.restic_environment(job)))
     except json.JSONDecodeError as error:
         raise BrowseError("Restic returned invalid snapshot JSON") from error
     if not isinstance(raw, list):
@@ -142,13 +146,18 @@ def list_snapshots(
 
 
 def list_directory(
-    base: list[str], snapshot: str, path: str, runner: status.Runner, timeout: int
+    base: list[str],
+    snapshot: str,
+    path: str,
+    runner: status.Runner,
+    timeout: int,
+    env: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], bool, str]:
     entries = []
     # restic lists the path's own node, which tells an empty folder from one the
     # snapshot does not contain, and a folder from a backed-up single file.
     kind = "dir" if path == "/" else "missing"
-    for line in run_restic(runner, base + ["ls", snapshot, path], timeout).split("\n"):
+    for line in run_restic(runner, base + ["ls", snapshot, path], timeout, env).split("\n"):
         try:
             node = json.loads(line)
         except json.JSONDecodeError:
@@ -219,6 +228,7 @@ def restore(
     kind: str,
     folder: Path,
     emit: Callable[[dict[str, Any]], None],
+    env: dict[str, str] | None = None,
 ) -> None:
     name = PurePosixPath(path).name
     restored = folder / name
@@ -233,7 +243,7 @@ def restore(
             "--include", "/" + escape_pattern(name),
         ]
 
-    env = status.restic_environment()
+    env = dict(env) if env is not None else status.restic_environment()
     env["RESTIC_PROGRESS_FPS"] = "1"
     output: list[str] = []
     summary: dict[str, Any] = {}
@@ -353,7 +363,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "ls":
             path = snapshot_path(args.path)
             entries, truncated, kind = list_directory(
-                base, snapshot_id(args.snapshot), path, runner, args.timeout_seconds
+                base, snapshot_id(args.snapshot), path, runner, args.timeout_seconds,
+                status.restic_environment(job),
             )
             emit({
                 "type": "entries", "path": path, "entries": entries, "truncated": truncated,
@@ -366,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
             snapshot = snapshot_id(args.snapshot)
             folder = unique_directory(args.target_root, restore_label(job, args.snapshot_time))
             try:
-                restore(base, snapshot, path, args.type, folder, emit)
+                restore(base, snapshot, path, args.type, folder, emit, status.restic_environment(job))
             except OSError:
                 remove_if_empty(folder)
                 raise

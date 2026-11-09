@@ -46,7 +46,7 @@ Repository commands use normal restic locking and are deferred while the matchin
 
 **Restore** writes only into a new folder it creates under `~/Restored`. It never restores over your current files, and it never reuses a folder, so an earlier restore is never overwritten either.
 
-The plugin never uses `--no-lock`, reads password contents itself (a password command is handed to restic as `--password-command`), prunes snapshots, unlocks repositories, or changes restic configuration.
+The plugin never uses `--no-lock`, reads password contents itself (a password command is handed to restic to run), passes a repository location on the command line where other users could read it, prunes snapshots, unlocks repositories, or changes restic configuration.
 
 ## Requirements
 
