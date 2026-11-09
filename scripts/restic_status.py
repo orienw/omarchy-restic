@@ -668,6 +668,21 @@ def parse_assignments(text: str, variables: dict[str, str]) -> None:
             variables[match.group(1)] = value
 
 
+def parse_environment_file(text: str, variables: dict[str, str]) -> None:
+    for line in text.replace("\\\n", " ").split("\n"):
+        match = SHELL_ASSIGNMENT.match(line)
+        if not match:
+            continue
+        raw = match.group(2)
+        # systemd keeps an unquoted value to the end of the line, spaces and
+        # inner quotes included, where a shell would split it into words.
+        if shell_token(raw) is None:
+            raw = shlex.quote(raw)
+        value = expand_static_value(raw, variables)
+        if value is not None:
+            variables[match.group(1)] = value
+
+
 def parse_environment(value: str, variables: dict[str, str]) -> None:
     try:
         entries = shlex.split(value, comments=False, posix=True)
@@ -1073,7 +1088,7 @@ def discovered_job(
     parse_environment(properties.get("Environment", ""), variables)
     environment_files = environment_file_paths(properties.get("EnvironmentFiles", ""), variables)
     for path in environment_files:
-        parse_assignments(read_static_text(path), variables)
+        parse_environment_file(read_static_text(path), variables)
     parse_assignments(script_text, variables)
 
     repository = flag_value(backup_tokens, "--repository-file", variables)

@@ -624,6 +624,23 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(env["RESTIC_PASSWORD_COMMAND"], "secret-tool lookup service restic repo laptop")
         self.assertNotIn("RESTIC_PASSWORD", env)
 
+    def test_discovery_reads_unquoted_environment_file_values(self):
+        environment = self.root / "restic.env"
+        environment.write_text(
+            "RESTIC_REPOSITORY=rclone:remote:Backups/laptop\n"
+            "RESTIC_PASSWORD_COMMAND=secret-tool lookup service restic repo laptop\n"
+        )
+        properties = restic_status.parse_properties("\n".join([
+            "ExecStart={ path=/usr/bin/restic ; argv[]=/usr/bin/restic backup /home ; ignore_errors=no ; }",
+            f"EnvironmentFiles={environment} (ignore_errors=no)",
+        ]))
+        with patch.object(restic_status, "systemd_show", return_value={"available": True, "properties": properties}):
+            job = restic_status.discovered_job("backup.service", "backup.timer", FakeRunner(), 5)
+
+        self.assertEqual(job["discoveryError"], "")
+        self.assertEqual(job["repository"], "rclone:remote:Backups/laptop")
+        self.assertEqual(job["passwordCommand"], "secret-tool lookup service restic repo laptop")
+
     def test_discovery_prefers_files_over_repository_url_and_password_command(self):
         environment = self.root / "restic.env"
         environment.write_text(
