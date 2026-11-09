@@ -16,8 +16,8 @@
       "name": "Dropbox",
       "service": "restic-dropbox.service",
       "timer": "restic-dropbox.timer",
-      "repositoryFile": "~/.config/restic/dropbox-repository",
-      "passwordFile": "~/.config/restic/dropbox-password",
+      "repository": "rclone:dropbox:Backups",
+      "passwordCommand": "secret-tool lookup service restic repository dropbox",
       "tag": "dropbox",
       "maxRunAgeHours": 36
     }
