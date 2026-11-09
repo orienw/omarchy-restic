@@ -679,6 +679,23 @@ class ResticStatusTest(unittest.TestCase):
             "COMMAND": "secret-tool lookup service restic repo laptop",
         })
 
+    def test_discovery_flags_beat_the_session_environment(self):
+        properties = restic_status.parse_properties(
+            "ExecStart={ path=/usr/bin/restic ; argv[]=/usr/bin/restic --repo=/srv/service"
+            " --password-command=service-secret backup /home ; ignore_errors=no ; }"
+        )
+        session = {"RESTIC_REPOSITORY_FILE": str(self.repository), "RESTIC_PASSWORD_FILE": str(self.password)}
+        with patch.dict(os.environ, session), patch.object(
+            restic_status, "systemd_show", return_value={"available": True, "properties": properties}
+        ):
+            job = restic_status.discovered_job("backup.service", "backup.timer", FakeRunner(), 5)
+
+        self.assertEqual(job["discoveryError"], "")
+        self.assertEqual(job["repositoryFile"], "")
+        self.assertEqual(job["repository"], "/srv/service")
+        self.assertEqual(job["passwordFile"], "")
+        self.assertEqual(job["passwordCommand"], "service-secret")
+
     def test_discovery_prefers_files_over_repository_url_and_password_command(self):
         environment = self.root / "restic.env"
         environment.write_text(

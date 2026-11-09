@@ -1144,6 +1144,27 @@ def timer_services(timer: str, runner: Runner, timeout: int) -> list[str]:
     return [timer.removesuffix(".timer") + ".service"]
 
 
+def discovered_source(
+    tokens: list[str],
+    variables: dict[str, str],
+    file_flag: str,
+    other_flags: list[str],
+    file_variable: str,
+    other_variable: str,
+) -> tuple[str, str]:
+    # Flags on the restic command beat the unit's environment, which also
+    # carries the session's own RESTIC_* variables. Within each, the file
+    # wins over its alternative.
+    file = flag_value(tokens, file_flag, variables) or ""
+    other = "" if file else next(
+        (value for flag in other_flags if (value := flag_value(tokens, flag, variables))), ""
+    )
+    if not file and not other:
+        file = variables.get(file_variable, "")
+        other = "" if file else variables.get(other_variable, "")
+    return file, other
+
+
 def discovered_job(
     service: str,
     timer: str,
@@ -1179,23 +1200,14 @@ def discovered_job(
         parse_environment_file(read_static_text(path), variables)
     parse_assignments(script_text, variables)
 
-    repository = flag_value(backup_tokens, "--repository-file", variables)
-    password = flag_value(backup_tokens, "--password-file", variables)
-    repository = repository or variables.get("RESTIC_REPOSITORY_FILE", "")
-    password = password or variables.get("RESTIC_PASSWORD_FILE", "")
-    repository_location = ""
-    if not repository:
-        repository_location = (
-            flag_value(backup_tokens, "--repo", variables)
-            or flag_value(backup_tokens, "-r", variables)
-            or variables.get("RESTIC_REPOSITORY", "")
-        )
-    password_command = ""
-    if not password:
-        password_command = (
-            flag_value(backup_tokens, "--password-command", variables)
-            or variables.get("RESTIC_PASSWORD_COMMAND", "")
-        )
+    repository, repository_location = discovered_source(
+        backup_tokens, variables, "--repository-file", ["--repo", "-r"],
+        "RESTIC_REPOSITORY_FILE", "RESTIC_REPOSITORY",
+    )
+    password, password_command = discovered_source(
+        backup_tokens, variables, "--password-file", ["--password-command"],
+        "RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND",
+    )
     tag = flag_value(backup_tokens, "--tag", variables) or ""
 
     executable = "restic"
