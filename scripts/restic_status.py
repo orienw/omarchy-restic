@@ -505,6 +505,13 @@ def require_string(source: dict[str, Any], key: str, context: str) -> str:
     return value.strip()
 
 
+def optional_string(source: dict[str, Any], key: str, context: str) -> str:
+    value = source.get(key, "")
+    if not isinstance(value, str):
+        raise ConfigError(f"{context}.{key} must be a string")
+    return value.strip()
+
+
 def optional_unit(source: dict[str, Any], key: str, suffix: str, context: str) -> str | None:
     value = source.get(key)
     if value in (None, ""):
@@ -538,13 +545,24 @@ def normalize_job(raw: Any, index: int) -> dict[str, Any]:
     if not isinstance(tag, str):
         raise ConfigError(f"{context}.tag must be a string")
 
+    repository_file = optional_string(raw, "repositoryFile", context)
+    repository = optional_string(raw, "repository", context)
+    if not repository_file and not repository:
+        raise ConfigError(f"{context} must set repositoryFile or repository")
+    password_file = optional_string(raw, "passwordFile", context)
+    password_command = optional_string(raw, "passwordCommand", context)
+    if not password_file and not password_command:
+        raise ConfigError(f"{context} must set passwordFile or passwordCommand")
+
     return {
         "id": job_id,
         "name": str(raw.get("name") or job_id).strip(),
         "service": service,
         "timer": timer,
-        "repositoryFile": str(expanded_path(require_string(raw, "repositoryFile", context))),
-        "passwordFile": str(expanded_path(require_string(raw, "passwordFile", context))),
+        "repositoryFile": str(expanded_path(repository_file)) if repository_file else "",
+        "repository": repository,
+        "passwordFile": str(expanded_path(password_file)) if password_file else "",
+        "passwordCommand": password_command,
         "restic": restic.strip(),
         "tag": tag.strip(),
         "maxRunAgeHours": number(
@@ -1062,6 +1080,19 @@ def discovered_job(
     password = flag_value(backup_tokens, "--password-file", variables)
     repository = repository or variables.get("RESTIC_REPOSITORY_FILE", "")
     password = password or variables.get("RESTIC_PASSWORD_FILE", "")
+    repository_location = ""
+    if not repository:
+        repository_location = (
+            flag_value(backup_tokens, "--repo", variables)
+            or flag_value(backup_tokens, "-r", variables)
+            or variables.get("RESTIC_REPOSITORY", "")
+        )
+    password_command = ""
+    if not password:
+        password_command = (
+            flag_value(backup_tokens, "--password-command", variables)
+            or variables.get("RESTIC_PASSWORD_COMMAND", "")
+        )
     tag = flag_value(backup_tokens, "--tag", variables) or ""
 
     executable = "restic"
@@ -1075,10 +1106,10 @@ def discovered_job(
 
     name = discovered_name(description, service)
     missing = []
-    if not repository:
-        missing.append("RESTIC_REPOSITORY_FILE")
-    if not password:
-        missing.append("RESTIC_PASSWORD_FILE")
+    if not repository and not repository_location:
+        missing.append("RESTIC_REPOSITORY_FILE or RESTIC_REPOSITORY")
+    if not password and not password_command:
+        missing.append("RESTIC_PASSWORD_FILE or RESTIC_PASSWORD_COMMAND")
     discovery_error = ""
     if missing:
         discovery_error = "Automatic discovery could not find " + " and ".join(missing)
@@ -1089,7 +1120,9 @@ def discovered_job(
         "service": service,
         "timer": timer,
         "repositoryFile": str(expanded_path(repository)) if repository else "",
+        "repository": repository_location,
         "passwordFile": str(expanded_path(password)) if password else "",
+        "passwordCommand": password_command,
         "restic": executable,
         "tag": tag,
         "maxRunAgeHours": 36,
@@ -1627,16 +1660,16 @@ def restic_environment() -> dict[str, str]:
 
 
 def restic_command(job: dict[str, Any], restic: str, cache_dir: Path) -> list[str]:
-    return [
-        restic,
-        "--json",
-        "--cache-dir",
-        str(cache_dir),
-        "--repository-file",
-        job["repositoryFile"],
-        "--password-file",
-        job["passwordFile"],
-    ]
+    command = [restic, "--json", "--cache-dir", str(cache_dir)]
+    if job["repositoryFile"]:
+        command += ["--repository-file", job["repositoryFile"]]
+    else:
+        command += ["--repo", job.get("repository", "")]
+    if job["passwordFile"]:
+        command += ["--password-file", job["passwordFile"]]
+    else:
+        command += ["--password-command", job.get("passwordCommand", "")]
+    return command
 
 
 def restic_base(job: dict[str, Any], config_path: Path, cache_dir: Path) -> list[str]:
@@ -1644,12 +1677,14 @@ def restic_base(job: dict[str, Any], config_path: Path, cache_dir: Path) -> list
         raise RepositoryUnavailable(
             job["discoveryError"] + ". Add a jobs.json override for this service."
         )
-    repository_file = Path(job["repositoryFile"])
-    if not repository_file.is_file():
-        raise RepositoryUnavailable(f"Repository file not found: {repository_file}")
-    password_file = Path(job["passwordFile"])
-    if not password_file.is_file():
-        raise RepositoryUnavailable(f"Password file not found: {password_file}")
+    if job["repositoryFile"] and not Path(job["repositoryFile"]).is_file():
+        raise RepositoryUnavailable(f"Repository file not found: {job['repositoryFile']}")
+    if not job["repositoryFile"] and not job.get("repository"):
+        raise RepositoryUnavailable("No repository configured")
+    if job["passwordFile"] and not Path(job["passwordFile"]).is_file():
+        raise RepositoryUnavailable(f"Password file not found: {job['passwordFile']}")
+    if not job["passwordFile"] and not job.get("passwordCommand"):
+        raise RepositoryUnavailable("No password file or password command configured")
     restic = resolve_restic(job["restic"])
     if not restic:
         raise RepositoryUnavailable(f"Restic command not found: {job['restic']}")
@@ -1712,7 +1747,9 @@ def normalized_stats(raw: Any) -> dict[str, Any]:
 def cache_key(job: dict[str, Any]) -> str:
     relevant = {
         "repositoryFile": job["repositoryFile"],
+        "repository": job.get("repository", ""),
         "passwordFile": job["passwordFile"],
+        "passwordCommand": job.get("passwordCommand", ""),
         "restic": job["restic"],
         "tag": job["tag"],
     }

@@ -46,7 +46,7 @@ Repository commands use normal restic locking and are deferred while the matchin
 
 **Restore** writes only into a new folder it creates under `~/Restored`. It never restores over your current files, and it never reuses a folder, so an earlier restore is never overwritten either.
 
-The plugin never uses `--no-lock`, reads password contents itself, prunes snapshots, unlocks repositories, or changes restic configuration.
+The plugin never uses `--no-lock`, reads password contents itself (a password command is handed to restic as `--password-command`), prunes snapshots, unlocks repositories, or changes restic configuration.
 
 ## Requirements
 
@@ -54,7 +54,7 @@ The plugin never uses `--no-lock`, reads password contents itself, prunes snapsh
 - Python 3
 - restic 0.16 or newer, for restoring a single file or folder
 - Each monitored backup represented by a user systemd service and timer
-- Repository and password files usable by restic
+- A repository file or location, and a password file or command, usable by restic
 
 ## Install
 
@@ -67,12 +67,12 @@ omarchy plugin add https://github.com/orienw/omarchy-restic.git --enable
 The plugin discovers restic jobs automatically. It lists user systemd timers, resolves each triggered service, and inspects static service metadata or a readable local wrapper script. Discovery recognizes `restic backup` jobs and extracts:
 
 - The service and timer names
-- `RESTIC_REPOSITORY_FILE`
-- `RESTIC_PASSWORD_FILE`
+- `RESTIC_REPOSITORY_FILE`, or `RESTIC_REPOSITORY` / `--repo`
+- `RESTIC_PASSWORD_FILE`, or `RESTIC_PASSWORD_COMMAND` / `--password-command`
 - The restic executable when statically assigned
 - The backup tag when present
 
-Discovery never sources or executes a backup script. Direct restic commands and static shell assignments are supported. Dynamic command construction, repository URLs without repository files, and unusual credential loading need an override.
+Discovery never sources or executes a backup script. Direct restic commands and static shell assignments are supported. When both a file and its alternative are set, the file wins. A password command runs as you, the same way restic runs it for the backup service, so it must work from the Omarchy shell's session (for example `secret-tool` with an unlocked keyring). Dynamic command construction and unusual credential loading need an override.
 
 Discovered job identifiers come from the service unit name, so changing a unit description only changes the label. The last good discovery is cached. If timer discovery later fails, the existing cards remain visible while the panel reports that verification is degraded. If a single service or its wrapper script cannot be inspected, its cached definition is reused the same way.
 
@@ -114,8 +114,10 @@ Job fields:
 | `name` | No | Label shown in the panel |
 | `service` | Yes | User systemd backup service |
 | `timer` | Yes | User systemd schedule timer |
-| `repositoryFile` | Yes | File containing the restic repository location |
-| `passwordFile` | Yes | Restic repository password file |
+| `repositoryFile` | One of these two | File containing the restic repository location |
+| `repository` | One of these two | Repository location, such as `rclone:remote:path` |
+| `passwordFile` | One of these two | Restic repository password file |
+| `passwordCommand` | One of these two | Command that prints the repository password |
 | `restic` | No | Executable name or path, defaults to `restic` |
 | `tag` | No | Restricts snapshots and stats to one restic tag |
 | `maxRunAgeHours` | No | Successful-run deadline. Defaults to 36 hours or the configured timer interval plus its random delay and 12 hours, whichever is larger. Calendar deadlines follow the next scheduled occurrence after the last successful run or trigger. If the schedule cannot be evaluated, the default is 36 hours |

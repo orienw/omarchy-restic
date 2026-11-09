@@ -600,6 +600,70 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(job["passwordFile"], str(self.password))
         self.assertEqual(job["discoveryError"], "")
 
+    def test_discovery_accepts_repository_url_and_password_command(self):
+        environment = self.root / "restic.env"
+        environment.write_text(
+            "RESTIC_REPOSITORY=rclone:remote:Backups/laptop\n"
+            'RESTIC_PASSWORD_COMMAND="secret-tool lookup service restic repo laptop"\n'
+        )
+        properties = restic_status.parse_properties("\n".join([
+            "ExecStart={ path=/usr/bin/restic ; argv[]=/usr/bin/restic backup /home ; ignore_errors=no ; }",
+            f"EnvironmentFiles={environment} (ignore_errors=no)",
+        ]))
+        with patch.object(restic_status, "systemd_show", return_value={"available": True, "properties": properties}):
+            job = restic_status.discovered_job("backup.service", "backup.timer", FakeRunner(), 5)
+
+        self.assertEqual(job["discoveryError"], "")
+        self.assertEqual(job["repositoryFile"], "")
+        self.assertEqual(job["passwordFile"], "")
+        self.assertEqual(
+            restic_status.restic_command(job, "/usr/bin/restic", self.root)[4:],
+            [
+                "--repo", "rclone:remote:Backups/laptop",
+                "--password-command", "secret-tool lookup service restic repo laptop",
+            ],
+        )
+
+    def test_discovery_prefers_files_over_repository_url_and_password_command(self):
+        environment = self.root / "restic.env"
+        environment.write_text(
+            f"RESTIC_REPOSITORY_FILE={self.repository}\nRESTIC_REPOSITORY=rclone:remote:other\n"
+            f"RESTIC_PASSWORD_FILE={self.password}\nRESTIC_PASSWORD_COMMAND=false\n"
+        )
+        properties = restic_status.parse_properties("\n".join([
+            "ExecStart={ path=/usr/bin/restic ; argv[]=/usr/bin/restic backup /home ; ignore_errors=no ; }",
+            f"EnvironmentFiles={environment} (ignore_errors=no)",
+        ]))
+        with patch.object(restic_status, "systemd_show", return_value={"available": True, "properties": properties}):
+            job = restic_status.discovered_job("backup.service", "backup.timer", FakeRunner(), 5)
+
+        self.assertEqual(
+            restic_status.restic_command(job, "/usr/bin/restic", self.root)[4:],
+            ["--repository-file", str(self.repository), "--password-file", str(self.password)],
+        )
+
+    def test_discovery_reads_repo_and_password_command_flags(self):
+        properties = restic_status.parse_properties(
+            "ExecStart={ path=/usr/bin/restic ; argv[]=/usr/bin/restic -r sftp:host:/srv/restic"
+            " --password-command pass-show backup /home ; ignore_errors=no ; }"
+        )
+        with patch.object(restic_status, "systemd_show", return_value={"available": True, "properties": properties}):
+            job = restic_status.discovered_job("backup.service", "backup.timer", FakeRunner(), 5)
+
+        self.assertEqual(job["discoveryError"], "")
+        self.assertEqual(job["repository"], "sftp:host:/srv/restic")
+        self.assertEqual(job["passwordCommand"], "pass-show")
+
+    def test_discovery_without_credentials_names_both_alternatives(self):
+        properties = restic_status.parse_properties(
+            "ExecStart={ path=/usr/bin/restic ; argv[]=/usr/bin/restic backup /home ; ignore_errors=no ; }"
+        )
+        with patch.object(restic_status, "systemd_show", return_value={"available": True, "properties": properties}):
+            job = restic_status.discovered_job("backup.service", "backup.timer", FakeRunner(), 5)
+
+        self.assertIn("RESTIC_REPOSITORY_FILE or RESTIC_REPOSITORY", job["discoveryError"])
+        self.assertIn("RESTIC_PASSWORD_FILE or RESTIC_PASSWORD_COMMAND", job["discoveryError"])
+
     def test_effective_environment_preserves_drop_ins_and_environment_file_resets(self):
         old_environment = self.root / "old.env"
         old_environment.write_text("RESTIC_REPOSITORY_FILE=/old/file-repo\n")
@@ -1645,6 +1709,29 @@ class ResticStatusTest(unittest.TestCase):
 
         self.assertEqual(report["config"]["status"], "error")
         self.assertIn("jobs[0].checkMaxAgeHours", report["config"]["error"])
+
+    def test_configured_job_accepts_repository_and_password_command(self):
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        job = config["jobs"][0]
+        del job["repositoryFile"], job["passwordFile"]
+        job["repository"] = "rclone:remote:Backups/laptop"
+        job["passwordCommand"] = "secret-tool lookup service restic"
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+
+        jobs = restic_status.load_config(self.config)
+
+        self.assertEqual(jobs[0]["repository"], "rclone:remote:Backups/laptop")
+        self.assertEqual(jobs[0]["passwordCommand"], "secret-tool lookup service restic")
+
+    def test_configured_job_without_any_password_source_is_a_config_error(self):
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        del config["jobs"][0]["passwordFile"]
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+
+        report = self.collect(FakeRunner())
+
+        self.assertEqual(report["config"]["status"], "error")
+        self.assertIn("passwordFile or passwordCommand", report["config"]["error"])
 
     def test_non_numeric_max_run_age_is_a_config_error(self):
         config = json.loads(self.config.read_text(encoding="utf-8"))
