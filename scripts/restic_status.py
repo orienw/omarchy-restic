@@ -42,6 +42,11 @@ RESTIC_EXIT_MESSAGES = {
     12: "Wrong repository password",
     130: "{} was cancelled",
 }
+RESTIC_EXIT_ERRORS = {
+    10: "Repository not found",
+    11: "Repository is locked by another operation",
+    12: "Wrong repository password",
+}
 UNIT_RESULT_MESSAGES = {
     "timeout": "{} timed out",
     "oom-kill": "{} ran out of memory",
@@ -474,6 +479,19 @@ def sanitize(text: Any, limit: int = 360) -> str:
     if len(value) > limit:
         return value[: limit - 3] + "..."
     return value
+
+
+def restic_error(returncode: int, output: str) -> str:
+    if returncode in RESTIC_EXIT_ERRORS:
+        return RESTIC_EXIT_ERRORS[returncode]
+    for line in reversed(output.split("\n")):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict) and entry.get("message_type") == "exit_error":
+            return sanitize(entry.get("message"))
+    return sanitize(output) or f"Restic exited with status {returncode}"
 
 
 def expanded_path(value: str) -> Path:
@@ -1098,7 +1116,9 @@ def systemd_show(
         command.extend(["--property", prop])
     try:
         result = runner.run(command, timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except subprocess.TimeoutExpired:
+        return {"available": False, "error": "The systemd user manager did not respond in time"}
+    except OSError as error:
         return {"available": False, "error": sanitize(error)}
     if result.returncode != 0:
         return {"available": False, "error": sanitize(result.stderr or result.stdout)}
@@ -1116,7 +1136,9 @@ def list_user_timers(runner: Runner, timeout: int) -> list[str]:
     ]
     try:
         result = runner.run(command, timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except subprocess.TimeoutExpired as error:
+        raise DiscoveryError("Could not list user timers: the systemd user manager did not respond in time") from error
+    except OSError as error:
         raise DiscoveryError(f"Could not list user timers: {sanitize(error)}") from error
     if result.returncode != 0:
         raise DiscoveryError(
@@ -1551,7 +1573,9 @@ def journal_runs(
     ]
     try:
         result = runner.run(command, timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except subprocess.TimeoutExpired:
+        return None, "The journal did not respond in time"
+    except OSError as error:
         return None, sanitize(error)
     if result.returncode != 0:
         return None, sanitize(result.stderr or result.stdout)
@@ -2138,12 +2162,14 @@ def collect_repository(
         snapshot_command.append("--tag=" + job["tag"])
     try:
         snapshots_result = runner.run(snapshot_command, timeout=timeout, env=restic_environment(job))
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except subprocess.TimeoutExpired:
+        return failure("unavailable", "The repository did not respond in time")
+    except OSError as error:
         return failure("unavailable", sanitize(error))
 
     if snapshots_result.returncode != 0:
         status = restic_failure_status(snapshots_result.returncode)
-        message = sanitize(snapshots_result.stderr or snapshots_result.stdout or "Restic snapshot query failed")
+        message = restic_error(snapshots_result.returncode, snapshots_result.stderr + "\n" + snapshots_result.stdout)
         return failure(status, message, "busy" if status == "busy" else "stale")
 
     try:
@@ -2174,8 +2200,10 @@ def collect_repository(
             else:
                 partial_error = "Restic returned invalid stats JSON"
         else:
-            partial_error = sanitize(stats_result.stderr or stats_result.stdout or "Restic stats query failed")
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
+            partial_error = restic_error(stats_result.returncode, stats_result.stderr + "\n" + stats_result.stdout)
+    except subprocess.TimeoutExpired:
+        partial_error = "The repository did not respond in time"
+    except (OSError, json.JSONDecodeError) as error:
         partial_error = sanitize(error)
 
     checked_at = isoformat(now)

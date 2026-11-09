@@ -25,11 +25,6 @@ import restic_status as status
 SNAPSHOT_ID = re.compile(r"[0-9a-f]{64}")
 MAX_ENTRIES = 5000
 CANCEL_GRACE_SECONDS = 10
-RESTIC_EXIT_ERRORS = {
-    10: "Repository not found",
-    11: "Repository is locked by another operation",
-    12: "Wrong repository password",
-}
 
 
 class BrowseError(RuntimeError):
@@ -64,19 +59,6 @@ def resolve_job(
     return job
 
 
-def restic_error(returncode: int, output: str) -> str:
-    if returncode in RESTIC_EXIT_ERRORS:
-        return RESTIC_EXIT_ERRORS[returncode]
-    for line in reversed(output.split("\n")):
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(entry, dict) and entry.get("message_type") == "exit_error":
-            return status.sanitize(entry.get("message"))
-    return status.sanitize(output) or f"Restic exited with status {returncode}"
-
-
 def run_restic(
     runner: status.Runner, command: list[str], timeout: int, env: dict[str, str] | None = None
 ) -> str:
@@ -89,7 +71,7 @@ def run_restic(
     except OSError as error:
         raise BrowseError(status.sanitize(error)) from error
     if result.returncode != 0:
-        raise BrowseError(restic_error(result.returncode, result.stderr + "\n" + result.stdout))
+        raise BrowseError(status.restic_error(result.returncode, result.stderr + "\n" + result.stdout))
     return result.stdout
 
 
@@ -311,7 +293,7 @@ def restore(
         emit({"type": "cancelled", "folder": kept_folder(folder)})
     elif returncode != 0:
         remove_if_empty(restored, folder)
-        emit({"type": "error", "error": restic_error(returncode, "".join(output)), "folder": kept_folder(folder)})
+        emit({"type": "error", "error": status.restic_error(returncode, "".join(output)), "folder": kept_folder(folder)})
     elif not restored.exists() and not restored.is_symlink():
         remove_if_empty(folder)
         emit({"type": "error", "error": "Nothing was restored", "folder": kept_folder(folder)})

@@ -1433,6 +1433,103 @@ class ResticStatusTest(unittest.TestCase):
         command = next(command for command, _ in runner.calls if "--output=json" in command)
         self.assertIn(f"MESSAGE_ID={restic_status.UNIT_PROCESS_EXIT}", command)
 
+    def test_repository_failures_show_readable_errors(self):
+        cases = [
+            (10, "Repository not found"),
+            (11, "Repository is locked by another operation"),
+            (12, "Wrong repository password"),
+            (1, "Fatal: backend unavailable password=[redacted]"),
+        ]
+        for query in ("snapshots", "stats"):
+            for cached in (False, True):
+                for code, expected in cases:
+                    with self.subTest(query=query, cached=cached, code=code):
+                        restic_status.cache_file(self.cache, self.config, "home").unlink(missing_ok=True)
+                        if cached:
+                            self.collect(FakeRunner())
+                        runner = FakeRunner()
+                        run = runner.run
+
+                        def fail_query(command, *, timeout, env=None):
+                            if query in command:
+                                output = "retrying in 1s\n" + json.dumps({
+                                    "message_type": "exit_error", "code": code,
+                                    "message": "Fatal: backend unavailable\npassword=secret",
+                                })
+                                return subprocess.CompletedProcess(command, code, "", output)
+                            return run(command, timeout=timeout, env=env)
+
+                        runner.run = fail_query
+                        report = self.collect(runner, force=True)
+                        job = report["jobs"][0]
+                        repository = job["repository"]
+                        self.assertEqual(repository["error"], expected)
+                        if query == "stats":
+                            self.assertEqual(repository["status"], "partial")
+                            self.assertEqual(job["status"], "healthy")
+                        elif code == 11:
+                            self.assertEqual(repository["status"], "busy")
+                        else:
+                            self.assertEqual(repository["status"], "stale" if cached else "unavailable")
+                            self.assertEqual(job["statusText"], expected)
+
+    def test_restic_errors_accept_plain_text_and_json_on_either_stream(self):
+        cases = [
+            ("Fatal: backend unavailable password=secret", "Fatal: backend unavailable password=[redacted]"),
+            ("", "Restic exited with status 1"),
+            ("retrying\n" + json.dumps({"message_type": "exit_error", "message": "No route to host"}),
+             "No route to host"),
+        ]
+        for query in ("snapshots", "stats"):
+            for stdout in (False, True):
+                for output, expected in cases:
+                    with self.subTest(query=query, stdout=stdout, output=output):
+                        runner = FakeRunner()
+                        run = runner.run
+
+                        def fail_query(command, *, timeout, env=None):
+                            if query in command:
+                                return subprocess.CompletedProcess(command, 1, output if stdout else "", "" if stdout else output)
+                            return run(command, timeout=timeout, env=env)
+
+                        runner.run = fail_query
+                        self.assertEqual(self.collect(runner, force=True)["jobs"][0]["repository"]["error"], expected)
+
+    def test_repository_timeouts_show_a_plain_sentence(self):
+        for query in ("snapshots", "stats"):
+            for cached in (False, True):
+                with self.subTest(query=query, cached=cached):
+                    restic_status.cache_file(self.cache, self.config, "home").unlink(missing_ok=True)
+                    if cached:
+                        self.collect(FakeRunner())
+                    runner = FakeRunner()
+                    run = runner.run
+
+                    def time_out(command, *, timeout, env=None):
+                        if query in command:
+                            raise subprocess.TimeoutExpired(command, timeout)
+                        return run(command, timeout=timeout, env=env)
+
+                    runner.run = time_out
+                    job = self.collect(runner, force=True)["jobs"][0]
+                    self.assertEqual(job["repository"]["error"], "The repository did not respond in time")
+                    self.assertEqual(job["repository"]["status"],
+                                     "partial" if query == "stats" else "stale" if cached else "unavailable")
+                    if query == "snapshots":
+                        self.assertEqual(job["statusText"], "The repository did not respond in time")
+
+    def test_systemd_and_journal_timeouts_show_plain_sentences(self):
+        runner = FakeRunner()
+        with patch.object(runner, "run", side_effect=subprocess.TimeoutExpired(["command", "private-path"], 30)):
+            shown = restic_status.systemd_show("backup.service", ["LoadState"], runner, 30)
+            self.assertEqual(shown, {"available": False, "error": "The systemd user manager did not respond in time"})
+            self.assertEqual(restic_status.journal_runs("backup.service", runner, 30, []),
+                             (None, "The journal did not respond in time"))
+            report = self.collect(runner)
+        self.assertEqual(report["config"]["error"],
+                         "Could not list user timers: the systemd user manager did not respond in time")
+        self.assertNotIn("private-path", json.dumps(report))
+
     def test_failed_refresh_keeps_cached_repository_data(self):
         self.collect(FakeRunner())
         report = self.collect(FakeRunner(restic_error=1), force=True)

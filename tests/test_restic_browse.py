@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -266,13 +267,22 @@ class ResticBrowseTest(unittest.TestCase):
         self.assertEqual(runner.calls[0][-2:], ["snapshots", "--tag=home"])
 
     def test_restic_failures_become_readable_errors(self):
-        runner = ListRunner("", 11)
-        with self.assertRaisesRegex(restic_browse.BrowseError, "locked"):
-            restic_browse.list_snapshots({"tag": ""}, ["restic"], runner, 30)
+        for code, expected in ((10, "Repository not found"), (11, "Repository is locked by another operation"),
+                               (12, "Wrong repository password")):
+            with self.subTest(code=code):
+                runner = ListRunner("", code)
+                with self.assertRaisesRegex(restic_browse.BrowseError, expected):
+                    restic_browse.list_snapshots({"tag": ""}, ["restic"], runner, 30)
 
-        runner = ListRunner("", 1, json.dumps({"message_type": "exit_error", "code": 1, "message": "path nope: not found"}))
+        runner = ListRunner("", 1, "retrying\n" + json.dumps({"message_type": "exit_error", "code": 1, "message": "path nope: not found"}))
         with self.assertRaisesRegex(restic_browse.BrowseError, "path nope: not found"):
             restic_browse.list_directory(["restic"], SNAPSHOT, "/nope", runner, 30)
+
+    def test_restic_timeout_shows_a_plain_sentence(self):
+        runner = ListRunner("")
+        with patch.object(runner, "run", side_effect=subprocess.TimeoutExpired(["restic", "snapshots"], 30)):
+            with self.assertRaisesRegex(restic_browse.BrowseError, "^The repository did not respond in time$"):
+                restic_browse.list_snapshots({"tag": ""}, ["restic"], runner, 30)
 
     def config(self) -> Path:
         repository = self.root / "repository"
