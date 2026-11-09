@@ -672,7 +672,7 @@ def parse_assignments(text: str, variables: dict[str, str]) -> None:
             variables[match.group(1)] = value
 
 
-ENVIRONMENT_FILE_ESCAPES = "\\\"'$`"
+ENVIRONMENT_FILE_ESCAPES = "\\\"$`"
 
 
 def parse_environment_file(text: str, variables: dict[str, str]) -> None:
@@ -688,7 +688,7 @@ def parse_environment_file(text: str, variables: dict[str, str]) -> None:
 
     def push() -> None:
         nonlocal trailing
-        name = "".join(key).rstrip()
+        name = "".join(key).rstrip(" \t\r\n")
         content = "".join(value if trailing is None else value[:trailing])
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
             variables[name] = content
@@ -731,6 +731,7 @@ def parse_environment_file(text: str, variables: dict[str, str]) -> None:
                 state = "pre_key"
             elif character == "\\":
                 state = "value_escape"
+                trailing = None
             else:
                 if character not in " \t":
                     trailing = None
@@ -757,7 +758,7 @@ def parse_environment_file(text: str, variables: dict[str, str]) -> None:
         elif state == "double_quote_escape":
             if character in ENVIRONMENT_FILE_ESCAPES:
                 value.append(character)
-            elif not newline:
+            elif character != "\n":
                 value.extend(("\\", character))
             state = "double_quote"
         elif state == "comment":

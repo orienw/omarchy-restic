@@ -660,7 +660,11 @@ class ResticStatusTest(unittest.TestCase):
             'SPACED = spaced \t\n'
             "SINGLE='single $x\\n'tail\n"
             '; semi comment\n'
-            'COMMAND=secret-tool lookup service restic repo laptop\n',
+            'COMMAND=secret-tool lookup service restic repo laptop\n'
+            'APOSTROPHE="printf %s a\\\'b"\n'
+            'BACKTICK="x\\`y\\zz"\n'
+            'KEPT_SPACE=/srv/repo \\\n\n'
+            'NBSP=/srv/right\nNBSP =/srv/wrong\n',
             variables,
         )
         del variables["HOME"]
@@ -678,6 +682,10 @@ class ResticStatusTest(unittest.TestCase):
             "SPACED": "spaced",
             "SINGLE": "single $x\\ntail",
             "COMMAND": "secret-tool lookup service restic repo laptop",
+            "APOSTROPHE": "printf %s a\\'b",
+            "BACKTICK": "x`y\\zz",
+            "KEPT_SPACE": "/srv/repo ",
+            "NBSP": "/srv/right",
         })
 
     def test_discovery_flags_beat_the_session_environment(self):
