@@ -1058,15 +1058,77 @@ class ResticStatusTest(unittest.TestCase):
                     expected,
                 )
 
+    def test_uninspectable_new_units_do_not_degrade_known_jobs(self):
+        script = self.discovery_script()
+        self.collect(DiscoveryRunner(script))
+        unrelated = self.root / "unrelated.sh"
+        for broken in ("missing", "invalid-encoding", "oversized", "service-error", "timer-error"):
+            with self.subTest(broken=broken):
+                unrelated.unlink(missing_ok=True)
+                if broken == "invalid-encoding":
+                    unrelated.write_bytes(b"#!/bin/sh\n\xff")
+                elif broken == "oversized":
+                    unrelated.write_bytes(b"#!/bin/sh\n" + b"x" * 1_048_576)
+                runner = DiscoveryRunner(script)
+                run = runner.run
+
+                def fail_unrelated(command, *, timeout, env=None):
+                    if "systemd-tmpfiles-clean.timer" in command and "Triggers" in command and broken == "timer-error":
+                        return subprocess.CompletedProcess(command, 1, "", "Failed to get timer properties")
+                    if "systemd-tmpfiles-clean.service" in command and "Description" in command:
+                        if broken == "service-error":
+                            return subprocess.CompletedProcess(command, 1, "", "Failed to get properties")
+                        output = f"ExecStart={{ path={unrelated} ; argv[]={unrelated} ; ignore_errors=no ; }}\n"
+                        return subprocess.CompletedProcess(command, 0, output, "")
+                    return run(command, timeout=timeout, env=env)
+
+                runner.run = fail_unrelated
+                for _ in range(2):
+                    report = self.collect(runner)
+                    self.assertEqual(report["config"]["status"], "ready")
+                    self.assertEqual(report["config"]["error"], "")
+                    self.assertEqual(report["overallStatus"], "healthy")
+                    self.assertEqual([job["id"] for job in report["jobs"]], ["home", "restic-documents"])
+
+    def test_uninspectable_unit_without_cached_discovery_is_ignored(self):
+        report = self.collect(DiscoveryRunner(self.root / "missing-executable"))
+        self.assertEqual(report["config"]["status"], "ready")
+        self.assertEqual(report["config"]["error"], "")
+        self.assertEqual(report["overallStatus"], "healthy")
+        self.assertEqual([job["id"] for job in report["jobs"]], ["home"])
+
+    def test_cached_unit_timeouts_reuse_discovery_without_naming_unrelated_failures(self):
+        script = self.discovery_script()
+        self.collect(DiscoveryRunner(script))
+        for unit, prop in (("restic-documents.service", "Description"), ("restic-documents.timer", "Triggers")):
+            with self.subTest(unit=unit):
+                runner = DiscoveryRunner(script)
+                run = runner.run
+
+                def time_out(command, *, timeout, env=None):
+                    if (unit in command and prop in command) or "systemd-tmpfiles-clean.service" in command:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    return run(command, timeout=timeout, env=env)
+
+                runner.run = time_out
+                report = self.collect(runner)
+                self.assertEqual(report["config"]["status"], "degraded")
+                self.assertEqual(report["config"]["error"], f"Could not inspect {unit}, using cached discovery")
+                self.assertEqual(report["overallStatus"], "unknown")
+                self.assertEqual([job["id"] for job in report["jobs"]], ["home", "restic-documents"])
+                self.assertEqual(report["jobs"][1]["source"], "systemd-cache")
+
     def test_missing_or_unreadable_wrapper_retains_cached_job(self):
-        for broken in ("missing", "invalid-encoding"):
+        for broken in ("missing", "invalid-encoding", "oversized"):
             with self.subTest(broken=broken):
                 script = self.discovery_script()
                 before = self.collect(DiscoveryRunner(script))
                 if broken == "missing":
                     script.unlink()
-                else:
+                elif broken == "invalid-encoding":
                     script.write_bytes(b"#!/bin/sh\n\xff")
+                else:
+                    script.write_bytes(b"#!/bin/sh\n" + b"x" * 1_048_576)
                 report = self.collect(DiscoveryRunner(script))
                 self.assertEqual([job["id"] for job in report["jobs"]], [job["id"] for job in before["jobs"]])
                 self.assertEqual(report["overallStatus"], "unknown")

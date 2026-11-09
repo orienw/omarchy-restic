@@ -2508,6 +2508,8 @@ def collect_report(
         discovered_jobs, failed_units = discover_jobs(runner, timeout)
         if failed_units:
             cached_jobs = load_discovery_cache(discovery_path) or []
+            cached_units = {unit for job in cached_jobs for unit in (job["service"], job["timer"])}
+            failed_units = [unit for unit in failed_units if unit in cached_units]
             discovered_services = {job["service"] for job in discovered_jobs}
             for cached in cached_jobs:
                 if cached["service"] not in discovered_services and (
@@ -2515,11 +2517,12 @@ def collect_report(
                 ):
                     discovered_jobs.append(cached)
                     discovered_services.add(cached["service"])
-            discovery_error = (
-                "Could not inspect "
-                + ", ".join(failed_units)
-                + "; using cached discovery"
-            )
+            if failed_units:
+                discovery_error = (
+                    "Could not inspect "
+                    + ", ".join(failed_units)
+                    + ", using cached discovery"
+                )
         try:
             save_discovery_cache(discovery_path, discovered_jobs, cache_dir)
         except OSError:

@@ -75,7 +75,7 @@ The plugin discovers restic jobs automatically. It lists user systemd timers, in
 
 Discovery never sources or executes a backup script. Direct restic commands and static shell assignments are supported. Flags on the restic command beat the unit's environment, and a file beats its alternative. A password command runs as you, the same way restic runs it for the backup service, so it must work from the Omarchy shell's session (for example `secret-tool` with an unlocked keyring). Variables exported in that session count too, so a `RESTIC_PASSWORD_COMMAND` set there is used for any discovered job that declares no password source of its own. Dynamic command construction and unusual credential loading need an override.
 
-Discovered job identifiers come from the service unit name, so changing a unit description only changes the label. The last good discovery is cached. If timer discovery later fails, the existing cards remain visible while the panel reports that verification is degraded. If a single service or its wrapper script cannot be inspected, its cached definition is reused the same way.
+Discovered job identifiers come from the service unit name, so changing a unit description only changes the label. The last good discovery is cached. If timer discovery later fails, the existing cards remain visible while the panel reports that verification is degraded. If a single service or its wrapper script cannot be inspected, its cached definition is reused the same way. Uninspectable units that have never been discovered as restic jobs are ignored.
 
 ## Optional job overrides
 
