@@ -319,6 +319,24 @@ class ResticBrowseTest(unittest.TestCase):
         }]}), encoding="utf-8")
         return config
 
+    def test_invalid_utf8_config_does_not_crash_job_resolution(self):
+        config = self.config()
+        status = restic_browse.status
+        job = dict(status.load_config(config)[0], discoveryError="")
+        cache = self.root / "cache"
+        config.write_bytes(b"\xff")
+        runner = ListRunner("")
+        with self.assertRaisesRegex(restic_browse.BrowseError, "Unknown backup job: home"):
+            restic_browse.resolve_job(config, cache, "home", runner, 30)
+        self.assertTrue(all(command[0] == "systemctl" for command in runner.calls))
+
+        status.save_discovery_cache(status.discovery_cache_file(cache, config), [job], cache)
+        runner = ListRunner("")
+        resolved = restic_browse.resolve_job(config, cache, "home", runner, 30)
+        self.assertEqual(resolved["id"], "home")
+        self.assertEqual(resolved["source"], "systemd-cache")
+        self.assertEqual(runner.calls, [])
+
     def test_unknown_jobs_are_reported_without_running_restic(self):
         output = subprocess.run(
             [sys.executable, str(PROJECT_DIR / "scripts" / "restic_browse.py"), "snapshots",

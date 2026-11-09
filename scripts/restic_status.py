@@ -606,6 +606,8 @@ def load_config(path: Path) -> list[dict[str, Any]]:
         raise ConfigError(f"Jobs file not found: {path}") from error
     except OSError as error:
         raise ConfigError(f"Jobs file is not readable: {path}: {sanitize(error)}") from error
+    except UnicodeDecodeError as error:
+        raise ConfigError(f"Jobs file is not valid UTF-8: {path}") from error
     except json.JSONDecodeError as error:
         raise ConfigError(f"Jobs file is not valid JSON: line {error.lineno}, column {error.colno}") from error
 

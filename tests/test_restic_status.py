@@ -2058,6 +2058,16 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(report["config"]["status"], "error")
         self.assertIn("at least one job", report["config"]["error"])
 
+    def test_invalid_utf8_config_returns_a_structured_error(self):
+        self.config.write_bytes(b'{"schemaVersion":1,"jobs":["\xff"]}')
+        with self.assertRaisesRegex(restic_status.ConfigError, "Jobs file is not valid UTF-8"):
+            restic_status.load_config(self.config)
+        report = self.collect(FakeRunner())
+        self.assertEqual(report["overallStatus"], "unknown")
+        self.assertEqual(report["jobs"], [])
+        self.assertEqual(report["config"]["status"], "error")
+        self.assertEqual(report["config"]["error"], f"Jobs file is not valid UTF-8: {self.config}")
+
     def test_directory_config_path_returns_a_structured_error(self):
         config_path = restic_status.expanded_path("")
         self.assertTrue(config_path.is_dir())
