@@ -601,6 +601,27 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(job["passwordFile"], str(self.password))
         self.assertEqual(job["discoveryError"], "")
 
+    def test_discovery_preserves_repeated_exec_start_commands(self):
+        backup = (
+            "ExecStart={ path=/usr/bin/restic ; argv[]=/usr/bin/restic"
+            " --repo=/srv/backup --password-command=backup-secret backup --tag=home /home ; ignore_errors=no ; }"
+        )
+        forget = (
+            "ExecStart={ path=/usr/bin/restic ; argv[]=/usr/bin/restic"
+            " --repo=/srv/other --password-command=other-secret forget --prune ; ignore_errors=no ; }"
+        )
+        for commands in ((backup, forget), (forget, backup)):
+            with self.subTest(commands=commands):
+                runner = FakeRunner()
+                with patch.object(runner, "run", return_value=subprocess.CompletedProcess(
+                    [], 0, "\n".join(commands), "",
+                )):
+                    job = restic_status.discovered_job("backup.service", "backup.timer", runner, 5)
+                self.assertIsNotNone(job)
+                self.assertEqual(job["repository"], "/srv/backup")
+                self.assertEqual(job["passwordCommand"], "backup-secret")
+                self.assertEqual(job["tag"], "home")
+
     def test_discovery_accepts_repository_url_and_password_command(self):
         environment = self.root / "restic.env"
         environment.write_text(

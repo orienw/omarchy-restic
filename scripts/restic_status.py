@@ -1073,7 +1073,7 @@ def parse_properties(output: str) -> dict[str, str]:
     for line in output.split("\n"):
         key, separator, value = line.partition("=")
         if separator:
-            if key in {"EnvironmentFiles", "TimersCalendar", "TimersMonotonic"} and key in result:
+            if key in {"ExecStart", "EnvironmentFiles", "TimersCalendar", "TimersMonotonic"} and key in result:
                 result[key] += "\n" + value
             else:
                 result[key] = value
