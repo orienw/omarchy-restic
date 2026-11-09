@@ -641,6 +641,44 @@ class ResticStatusTest(unittest.TestCase):
         self.assertEqual(job["repository"], "rclone:remote:Backups/laptop")
         self.assertEqual(job["passwordCommand"], "secret-tool lookup service restic repo laptop")
 
+    def test_environment_files_follow_systemd_rules(self):
+        variables = {"EMPTY": "old", "HOME": "/home/test"}
+        restic_status.parse_environment_file(
+            'INNER=/srv/repo"prod"\n'
+            'JOINED="/srv/repo" suffix\n'
+            'HASH=/srv/repo#prod\n'
+            'ESCAPED=/srv/my\\ repo\\ \n'
+            'export IGNORED=/srv/repo\n'
+            'LITERAL=$HOME/x\n'
+            'MULTI="line one\nline two"\n'
+            'EMPTY=\n'
+            'CONTINUED=a\\\nb\n'
+            '# comment \\\n'
+            'AFTER_COMMENT=after\n'
+            'QUOTED_ESCAPES="a\\"b\\$c\\nd"\n'
+            'SPACED = spaced \t\n'
+            "SINGLE='single $x\\n'tail\n"
+            '; semi comment\n'
+            'COMMAND=secret-tool lookup service restic repo laptop\n',
+            variables,
+        )
+        del variables["HOME"]
+        self.assertEqual(variables, {
+            "INNER": '/srv/repo"prod"',
+            "JOINED": "/srv/reposuffix",
+            "HASH": "/srv/repo#prod",
+            "ESCAPED": "/srv/my repo ",
+            "LITERAL": "$HOME/x",
+            "MULTI": "line one\nline two",
+            "EMPTY": "",
+            "CONTINUED": "ab",
+            "AFTER_COMMENT": "after",
+            "QUOTED_ESCAPES": 'a"b$c\\nd',
+            "SPACED": "spaced",
+            "SINGLE": "single $x\\ntail",
+            "COMMAND": "secret-tool lookup service restic repo laptop",
+        })
+
     def test_discovery_prefers_files_over_repository_url_and_password_command(self):
         environment = self.root / "restic.env"
         environment.write_text(

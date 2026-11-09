@@ -672,19 +672,103 @@ def parse_assignments(text: str, variables: dict[str, str]) -> None:
             variables[match.group(1)] = value
 
 
+ENVIRONMENT_FILE_ESCAPES = "\\\"'$`"
+
+
 def parse_environment_file(text: str, variables: dict[str, str]) -> None:
-    for line in text.replace("\\\n", " ").split("\n"):
-        match = SHELL_ASSIGNMENT.match(line)
-        if not match:
-            continue
-        raw = match.group(2)
-        # systemd keeps an unquoted value to the end of the line, spaces and
-        # inner quotes included, where a shell would split it into words.
-        if shell_token(raw) is None:
-            raw = shlex.quote(raw)
-        value = expand_static_value(raw, variables)
-        if value is not None:
-            variables[match.group(1)] = value
+    # systemd's rules rather than the shell's: no variable expansion, quotes
+    # only open at the start of a value, a backslash escapes the next
+    # character and joins lines, an unquoted value runs to the end of the
+    # line, and a line whose key is not a plain name (export KEY=...) is
+    # ignored.
+    state = "pre_key"
+    key: list[str] = []
+    value: list[str] = []
+    trailing: int | None = None
+
+    def push() -> None:
+        nonlocal trailing
+        name = "".join(key).rstrip()
+        content = "".join(value if trailing is None else value[:trailing])
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            variables[name] = content
+        key.clear()
+        value.clear()
+        trailing = None
+
+    for character in text:
+        newline = character in "\r\n"
+        if state == "pre_key":
+            if character in "#;":
+                state = "comment"
+            elif character not in " \t\r\n":
+                key.append(character)
+                state = "key"
+        elif state == "key":
+            if newline:
+                key.clear()
+                state = "pre_key"
+            elif character == "=":
+                state = "pre_value"
+            else:
+                key.append(character)
+        elif state == "pre_value":
+            if newline:
+                push()
+                state = "pre_key"
+            elif character == "'":
+                state = "single_quote"
+            elif character == '"':
+                state = "double_quote"
+            elif character == "\\":
+                state = "value_escape"
+            elif character not in " \t":
+                value.append(character)
+                state = "value"
+        elif state == "value":
+            if newline:
+                push()
+                state = "pre_key"
+            elif character == "\\":
+                state = "value_escape"
+            else:
+                if character not in " \t":
+                    trailing = None
+                elif trailing is None:
+                    trailing = len(value)
+                value.append(character)
+        elif state == "value_escape":
+            if not newline:
+                value.append(character)
+                trailing = None
+            state = "value"
+        elif state == "single_quote":
+            if character == "'":
+                state = "pre_value"
+            else:
+                value.append(character)
+        elif state == "double_quote":
+            if character == '"':
+                state = "pre_value"
+            elif character == "\\":
+                state = "double_quote_escape"
+            else:
+                value.append(character)
+        elif state == "double_quote_escape":
+            if character in ENVIRONMENT_FILE_ESCAPES:
+                value.append(character)
+            elif not newline:
+                value.extend(("\\", character))
+            state = "double_quote"
+        elif state == "comment":
+            if character == "\\":
+                state = "comment_escape"
+            elif newline:
+                state = "pre_key"
+        elif state == "comment_escape":
+            state = "pre_key" if newline else "comment"
+    if state not in {"pre_key", "key", "comment", "comment_escape"}:
+        push()
 
 
 def parse_environment(value: str, variables: dict[str, str]) -> None:
