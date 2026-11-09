@@ -46,7 +46,7 @@ Repository commands use normal restic locking and are deferred while the matchin
 
 **Restore** writes only into a new folder it creates under `~/Restored`. It never restores over your current files, and it never reuses a folder, so an earlier restore is never overwritten either.
 
-The plugin never uses `--no-lock`, reads password contents itself (a password command is handed to restic to run), passes a repository location on the command line where other users could read it, prunes snapshots, unlocks repositories, or changes restic configuration.
+The plugin never uses `--no-lock`, prunes snapshots, unlocks repositories, or changes restic configuration. It never reads password contents itself. A password command is handed to restic to run, and a repository location reaches restic through its environment, never on the command line where other users could read it.
 
 ## Requirements
 
@@ -72,7 +72,7 @@ The plugin discovers restic jobs automatically. It lists user systemd timers, re
 - The restic executable when statically assigned
 - The backup tag when present
 
-Discovery never sources or executes a backup script. Direct restic commands and static shell assignments are supported. When both a file and its alternative are set, the file wins. A password command runs as you, the same way restic runs it for the backup service, so it must work from the Omarchy shell's session (for example `secret-tool` with an unlocked keyring). Dynamic command construction and unusual credential loading need an override.
+Discovery never sources or executes a backup script. Direct restic commands and static shell assignments are supported. When both a file and its alternative are set, the file wins. A password command runs as you, the same way restic runs it for the backup service, so it must work from the Omarchy shell's session (for example `secret-tool` with an unlocked keyring). Variables exported in that session count too, so a `RESTIC_PASSWORD_COMMAND` set there is used for any discovered job that declares no password source of its own. Dynamic command construction and unusual credential loading need an override.
 
 Discovered job identifiers come from the service unit name, so changing a unit description only changes the label. The last good discovery is cached. If timer discovery later fails, the existing cards remain visible while the panel reports that verification is degraded. If a single service or its wrapper script cannot be inspected, its cached definition is reused the same way.
 
