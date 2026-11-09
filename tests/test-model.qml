@@ -28,6 +28,21 @@ ShellRoot {
         root.fail("byte formatting failed: " + Model.formatBytes(1073741824))
         return
       }
+      var largeCounts = [1000000, 1234567, 9876543210]
+      for (var c = 0; c < largeCounts.length; c++) {
+        var largeJob = { repository: {
+          snapshotCount: largeCounts[c],
+          latestSnapshot: { summary: { totalFilesProcessed: largeCounts[c] } }
+        } }
+        var counts = [Model.count(largeCounts[c], "file", "files"),
+          Model.snapshotSummary(largeJob), Model.snapshotCount(largeJob)]
+        for (var n = 0; n < counts.length; n++) {
+          if (/[eE][+-]/.test(counts[n])) {
+            root.fail("large counts must not use scientific notation: " + counts[n])
+            return
+          }
+        }
+      }
       var nowMs = Date.parse("2026-08-17T12:00:00Z")
       if (Model.relativeTime("2026-08-17T11:00:00Z", nowMs) !== "1 hour ago") {
         root.fail("relative time formatting failed")

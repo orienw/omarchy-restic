@@ -86,7 +86,7 @@ function formatDuration(value) {
 function count(value, singular, plural) {
   var amount = Number(value)
   if (!isFinite(amount)) return "Unknown"
-  return Math.round(amount).toLocaleString() + " " + (amount === 1 ? singular : plural)
+  return Math.round(amount).toLocaleString(Qt.locale(), "f", 0) + " " + (amount === 1 ? singular : plural)
 }
 
 function lastRun(job, nowMs) {
